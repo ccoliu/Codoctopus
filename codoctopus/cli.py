@@ -81,7 +81,9 @@ async def _run(args: argparse.Namespace) -> int:
     domain = get_domain(args.domain) if args.domain else None
 
     planner_provider = get_provider(args.model or settings.planner_model)
-    plan = await make_plan(planner_provider, args.goal, domain=domain)
+    plan = await make_plan(
+        planner_provider, args.goal, domain=domain, available_tools=list(_BUILTIN_TOOLS)
+    )
 
     if not args.json:
         _print_plan(plan)

@@ -16,6 +16,7 @@ from codoctopus.llm import (
     Completion,
     Message,
     Provider,
+    ProviderError,
     StructuredOutputError,
     ToolCall,
     ToolResult,
@@ -163,6 +164,36 @@ async def test_a_tool_call_short_circuits_the_schema_fallback():
     assert len(provider.calls) == 1, "must not retry a turn that asked for a tool"
 
 
+# --- vendor exceptions are wrapped into ProviderError ------------------
+
+
+async def test_an_unexpected_exception_from_complete_is_wrapped_in_providererror():
+    class Broken(ScriptedProvider):
+        async def _complete(self, *args, **kwargs):
+            raise TypeError("vendor SDK blew up for its own reasons")
+
+    with pytest.raises(ProviderError, match="Provider 'scripted' call failed"):
+        await Broken().complete([Message.user("go")])
+
+
+async def test_an_unexpected_exception_from_the_schema_fallback_is_wrapped_too():
+    class Broken(ScriptedProvider):
+        async def _complete(self, *args, **kwargs):
+            raise TypeError("vendor SDK blew up for its own reasons")
+
+    with pytest.raises(ProviderError, match="Provider 'scripted' call failed"):
+        await Broken(structured=False).complete([Message.user("go")], output_schema=Worksheet)
+
+
+async def test_a_providererror_raised_by_complete_passes_through_unwrapped():
+    class AlreadyClean(ScriptedProvider):
+        async def _complete(self, *args, **kwargs):
+            raise StructuredOutputError("already a clean ProviderError")
+
+    with pytest.raises(StructuredOutputError, match="already a clean ProviderError"):
+        await AlreadyClean().complete([Message.user("go")])
+
+
 # --- registry ---------------------------------------------------------
 
 
@@ -184,6 +215,16 @@ def test_bare_provider_name_takes_the_default_model():
 def test_unknown_provider_lists_what_is_available():
     with pytest.raises(Exception, match="Unknown provider 'nope'"):
         get_provider("nope:model")
+
+
+def test_an_exception_raised_while_constructing_a_provider_is_wrapped_too():
+    def broken_factory(model=None, **kw):
+        raise TypeError("vendor client validates credentials eagerly and blew up")
+
+    register_provider("broken", broken_factory)
+
+    with pytest.raises(ProviderError, match="Could not construct provider 'broken'"):
+        get_provider("broken:model")
 
 
 # --- transcript round-trip -------------------------------------------

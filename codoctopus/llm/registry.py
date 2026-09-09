@@ -49,13 +49,24 @@ def get_provider(ref: str, **options: Any) -> Provider:
     name, model = parse_model_ref(ref)
 
     if name in _CUSTOM:
-        return _CUSTOM[name](model=model, **options)
+        factory: Callable[..., Provider] = _CUSTOM[name]
+    else:
+        if name not in _BUILTIN:
+            raise ProviderError(
+                f"Unknown provider '{name}'. Available: {', '.join(available_providers())}"
+            )
+        module_path, class_name = _BUILTIN[name]
+        module = __import__(module_path, fromlist=[class_name])
+        factory = getattr(module, class_name)
 
-    if name not in _BUILTIN:
-        raise ProviderError(
-            f"Unknown provider '{name}'. Available: {', '.join(available_providers())}"
-        )
-
-    module_path, class_name = _BUILTIN[name]
-    module = __import__(module_path, fromlist=[class_name])
-    return getattr(module, class_name)(model=model, **options)
+    # Construction can fail for the same vendor-SDK reasons a call can (e.g.
+    # a client that validates credentials eagerly) — wrap those here too, for
+    # the same reason complete() wraps them: a caller catching ProviderError
+    # shouldn't see a raw SDK exception just because the failure happened one
+    # step earlier than the request itself.
+    try:
+        return factory(model=model, **options)
+    except ProviderError:
+        raise
+    except Exception as exc:
+        raise ProviderError(f"Could not construct provider '{name}': {exc}") from exc

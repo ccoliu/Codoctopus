@@ -25,13 +25,28 @@ class OpenAIProvider(Provider):
     name = "openai"
     default_model = "gpt-4.1"
 
-    def __init__(self, model: str | None = None, *, api_key: str | None = None, **options: Any) -> None:
+    def __init__(
+        self,
+        model: str | None = None,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        **options: Any,
+    ) -> None:
         super().__init__(model, **options)
         try:
             from openai import AsyncOpenAI
         except ImportError as exc:  # pragma: no cover - depends on install extras
             raise ProviderNotInstalled(self.name, "openai") from exc
-        self._client = AsyncOpenAI(api_key=api_key) if api_key else AsyncOpenAI()
+        # base_url lets this adapter also talk to any OpenAI-compatible local
+        # server (LM Studio, vLLM, etc); those don't check the key's value.
+        client_kwargs: dict[str, Any] = {}
+        if api_key:
+            client_kwargs["api_key"] = api_key
+        if base_url:
+            client_kwargs["base_url"] = base_url
+            client_kwargs.setdefault("api_key", "not-needed")
+        self._client = AsyncOpenAI(**client_kwargs)
 
     @property
     def supports_structured_output(self) -> bool:

@@ -46,22 +46,34 @@ class PlanningError(RuntimeError):
     """The planner could not produce a valid Plan within its retry budget."""
 
 
-def _build_system_prompt(domain: Domain | None) -> str:
-    if domain is None:
-        return _SYSTEM_PROMPT
+def _build_system_prompt(domain: Domain | None, available_tools: list[str] | None) -> str:
+    lines = [_SYSTEM_PROMPT]
 
-    lines = [_SYSTEM_PROMPT, "", f"You are planning within the '{domain.name}' domain."]
-    if domain.planner_hint:
-        lines.append(domain.planner_hint)
-    if domain.roles:
+    if domain is not None:
+        lines += ["", f"You are planning within the '{domain.name}' domain."]
+        if domain.planner_hint:
+            lines.append(domain.planner_hint)
+        if domain.roles:
+            lines.append(
+                "Use one of these exact names in a step's \"role\" field when it fits — the full "
+                "prompt behind each name will be filled in for you afterward. Write your own free-form "
+                "role text only when none of these fit:"
+            )
+            lines.extend(f"- {name}" for name in domain.roles)
+
+    # The tool universe a step may draw from comes from whatever the caller
+    # actually wired up (its ToolRegistry) — not the domain, which only hints
+    # at what's typical here. Naming any other tool would make the step fail
+    # at execution time with an "unknown tool" error, so always spell out the
+    # real, callable set rather than only listing it when a domain is set.
+    domain_tools = domain.default_tools if domain else []
+    tools = list(dict.fromkeys([*domain_tools, *(available_tools or [])]))
+    if tools:
         lines.append(
-            "Use one of these exact names in a step's \"role\" field when it fits — the full "
-            "prompt behind each name will be filled in for you afterward. Write your own free-form "
-            "role text only when none of these fit:"
+            f"Tools you may name in a step's \"tools\" field (use these exact names, "
+            f"omit the field for a step that needs none): {', '.join(tools)}"
         )
-        lines.extend(f"- {name}" for name in domain.roles)
-    if domain.default_tools:
-        lines.append(f"Tools available by default in this domain: {', '.join(domain.default_tools)}")
+
     return "\n".join(lines)
 
 
@@ -79,10 +91,16 @@ async def make_plan(
     goal: str,
     *,
     domain: Domain | None = None,
+    available_tools: list[str] | None = None,
     max_retries: int = 2,
 ) -> Plan:
-    """Ask `provider` to decompose `goal` into a validated Plan."""
-    system = _build_system_prompt(domain)
+    """Ask `provider` to decompose `goal` into a validated Plan.
+
+    `available_tools` should list every tool name the executor that will run
+    this plan can actually resolve (e.g. a ToolRegistry's tool names) — the
+    planner has no other way to know what a step may legally ask for.
+    """
+    system = _build_system_prompt(domain, available_tools)
     domain_line = f"\nDomain: {domain.name}" if domain else ""
     messages = [Message.user(f"Goal: {goal}{domain_line}")]
     last_error: Exception | None = None

@@ -99,25 +99,36 @@ class Provider(ABC):
         if tools and not self.supports_tools:
             raise ProviderError(f"Provider '{self.name}' does not support tool use")
 
-        if output_schema is None or self.supports_structured_output:
-            return await self._complete(
+        # A single choke point for every adapter's vendor-SDK exceptions
+        # (missing auth, bad request, rate limit, ...): none of them wrap
+        # their own errors into ProviderError, so without this a caller like
+        # the CLI — which only catches ProviderError — sees a raw traceback
+        # from whichever SDK happens to be installed instead of one
+        # consistent, catchable error type.
+        try:
+            if output_schema is None or self.supports_structured_output:
+                return await self._complete(
+                    messages,
+                    system=system,
+                    tools=tools,
+                    output_schema=output_schema,
+                    max_tokens=max_tokens,
+                    **kwargs,
+                )
+
+            return await self._complete_via_prompt(
                 messages,
                 system=system,
                 tools=tools,
                 output_schema=output_schema,
                 max_tokens=max_tokens,
+                schema_retries=schema_retries,
                 **kwargs,
             )
-
-        return await self._complete_via_prompt(
-            messages,
-            system=system,
-            tools=tools,
-            output_schema=output_schema,
-            max_tokens=max_tokens,
-            schema_retries=schema_retries,
-            **kwargs,
-        )
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError(f"Provider '{self.name}' call failed: {exc}") from exc
 
     # -- fallback for providers without native structured output ------
 
