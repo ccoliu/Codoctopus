@@ -10,7 +10,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from codoctopus.llm.providers.openai import OpenAIProvider, list_models
+import pytest
+
+from codoctopus.llm.base import ProviderError
+from codoctopus.llm.providers.openai import GatewayProvider, OpenAIProvider, list_models
 
 
 def test_default_construction_uses_the_real_openai_endpoint(monkeypatch):
@@ -138,3 +141,40 @@ async def test_no_base_url_never_queries_the_models_list_either(monkeypatch):
     await provider.complete([Message.user("hello")])
 
     assert provider.model == "gpt-4.1"
+
+
+# --- GatewayProvider: a distinct identity from "openai" for local gateways --
+
+
+def test_gateway_provider_requires_a_base_url():
+    with pytest.raises(ProviderError, match="base_url"):
+        GatewayProvider(model="qwen/qwen3.5-9b")
+
+
+def test_gateway_provider_points_the_client_at_the_given_base_url():
+    provider = GatewayProvider(model="qwen/qwen3.5-9b", base_url="http://localhost:1234/v1")
+    assert str(provider._client.base_url).rstrip("/") == "http://localhost:1234/v1"
+    assert provider.name == "gateway"
+
+
+async def test_gateway_provider_also_resolves_a_default_model_from_its_own_catalog(monkeypatch):
+    from codoctopus.llm.types import Message
+
+    async def fake_models_list(self, **kw):
+        return _FakeAsyncPage([SimpleNamespace(id="qwen/qwen3.5-9b")])
+
+    captured: dict = {}
+
+    async def fake_create(self, **kwargs):
+        captured["model"] = kwargs["model"]
+        return _fake_completion(kwargs["model"])
+
+    monkeypatch.setattr("openai.resources.models.AsyncModels.list", fake_models_list)
+    monkeypatch.setattr(
+        "openai.resources.chat.completions.completions.AsyncCompletions.create", fake_create
+    )
+
+    provider = GatewayProvider(base_url="http://localhost:1234/v1")
+    await provider.complete([Message.user("hello")])
+
+    assert captured["model"] == "qwen/qwen3.5-9b"

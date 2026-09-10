@@ -15,7 +15,10 @@ function ProviderRow({ provider }: { provider: string }) {
 
   useEffect(() => setSaved(false), [creds])
 
-  const supportsBaseUrl = provider === 'openai'
+  // "gateway" is a separate provider from "openai" precisely so a local
+  // LM Studio/vLLM/etc. server isn't labeled as if it were the real OpenAI
+  // API — it always needs a base_url, unlike "openai" which never does.
+  const isGateway = provider === 'gateway'
 
   return (
     <Card className="p-4">
@@ -23,30 +26,52 @@ function ProviderRow({ provider }: { provider: string }) {
         <span className="font-mono text-sm font-medium text-ink">{provider}</span>
         {saved && <span className="text-xs text-status-good">Saved</span>}
       </div>
+      {isGateway && (
+        <p className="mb-3 text-xs text-ink-secondary">
+          For an OpenAI-compatible local server (LM Studio, vLLM, ...) — not the real OpenAI API.
+        </p>
+      )}
       <div className="flex flex-col gap-3">
-        <div>
-          <label className="mb-1.5 block text-xs font-medium text-ink-secondary">API key</label>
-          <input
-            type="password"
-            value={creds.api_key ?? ''}
-            onChange={(e) => setCreds((c) => ({ ...c, api_key: e.target.value }))}
-            placeholder={`${provider.toUpperCase()}_API_KEY`}
-            autoComplete="off"
-            className={inputClass}
-          />
-        </div>
-        {supportsBaseUrl && (
+        {!isGateway && (
           <div>
-            <label className="mb-1.5 block text-xs font-medium text-ink-secondary">
-              Base URL <span className="font-normal text-ink-muted">(for an OpenAI-compatible local server, e.g. LM Studio)</span>
-            </label>
+            <label className="mb-1.5 block text-xs font-medium text-ink-secondary">API key</label>
             <input
-              value={creds.base_url ?? ''}
-              onChange={(e) => setCreds((c) => ({ ...c, base_url: e.target.value }))}
-              placeholder="http://localhost:1234/v1"
+              type="password"
+              value={creds.api_key ?? ''}
+              onChange={(e) => setCreds((c) => ({ ...c, api_key: e.target.value }))}
+              placeholder={`${provider.toUpperCase()}_API_KEY`}
+              autoComplete="off"
               className={inputClass}
             />
           </div>
+        )}
+        {isGateway && (
+          <>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-ink-secondary">
+                Base URL <span className="font-normal text-ink-muted">(required)</span>
+              </label>
+              <input
+                value={creds.base_url ?? ''}
+                onChange={(e) => setCreds((c) => ({ ...c, base_url: e.target.value }))}
+                placeholder="http://localhost:1234/v1"
+                className={inputClass}
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-ink-secondary">
+                API key <span className="font-normal text-ink-muted">(only if your server checks one)</span>
+              </label>
+              <input
+                type="password"
+                value={creds.api_key ?? ''}
+                onChange={(e) => setCreds((c) => ({ ...c, api_key: e.target.value }))}
+                placeholder="usually not needed"
+                autoComplete="off"
+                className={inputClass}
+              />
+            </div>
+          </>
         )}
         <button
           onClick={() => {

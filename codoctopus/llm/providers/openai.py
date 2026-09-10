@@ -155,6 +155,33 @@ class OpenAIProvider(Provider):
         )
 
 
+class GatewayProvider(OpenAIProvider):
+    """
+    An OpenAI-*compatible* self-hosted gateway (LM Studio, vLLM, a local
+    proxy, ...) — registered separately from "openai" so configuring one
+    isn't mislabeled as configuring the real OpenAI API (a model loaded in
+    LM Studio is not "an OpenAI model"), and so a missing base_url is a
+    clear error here instead of silently falling through to api.openai.com.
+    """
+
+    name = "gateway"
+
+    def __init__(
+        self,
+        model: str | None = None,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        **options: Any,
+    ) -> None:
+        if not base_url:
+            raise ProviderError(
+                "The 'gateway' provider needs a base_url pointing at your OpenAI-compatible "
+                "server (e.g. LM Studio, vLLM)."
+            )
+        super().__init__(model, api_key=api_key, base_url=base_url, **options)
+
+
 def _to_openai(message: Message) -> list[dict[str, Any]]:
     """OpenAI wants one message per tool result, under a dedicated role."""
     if message.tool_results:

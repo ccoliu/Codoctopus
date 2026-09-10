@@ -15,6 +15,11 @@ from codoctopus.llm.base import Provider, ProviderError
 _BUILTIN: dict[str, tuple[str, str]] = {
     "anthropic": ("codoctopus.llm.providers.anthropic", "AnthropicProvider"),
     "openai": ("codoctopus.llm.providers.openai", "OpenAIProvider"),
+    # Same wire protocol as "openai" (that's what "OpenAI-compatible" means)
+    # but a separate registry entry — an LM Studio/vLLM/etc. model isn't an
+    # OpenAI model, and this one requires base_url instead of silently
+    # falling through to the real api.openai.com without it.
+    "gateway": ("codoctopus.llm.providers.openai", "GatewayProvider"),
     "gemini": ("codoctopus.llm.providers.gemini", "GeminiProvider"),
     "ollama": ("codoctopus.llm.providers.ollama", "OllamaProvider"),
 }

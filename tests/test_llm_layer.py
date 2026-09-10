@@ -21,6 +21,7 @@ from codoctopus.llm import (
     ToolCall,
     ToolResult,
     ToolSpec,
+    available_providers,
     get_provider,
     list_models,
     register_provider,
@@ -216,6 +217,16 @@ def test_bare_provider_name_takes_the_default_model():
 def test_unknown_provider_lists_what_is_available():
     with pytest.raises(Exception, match="Unknown provider 'nope'"):
         get_provider("nope:model")
+
+
+def test_gateway_is_a_separate_builtin_provider_from_openai():
+    assert "gateway" in available_providers()
+    assert "openai" in available_providers()
+
+
+def test_gateway_without_a_base_url_is_a_clear_providererror():
+    with pytest.raises(ProviderError, match="base_url"):
+        get_provider("gateway:some-local-model")
 
 
 def test_an_exception_raised_while_constructing_a_provider_is_wrapped_too():
