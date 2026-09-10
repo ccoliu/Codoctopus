@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from codoctopus.llm.base import Provider, ProviderNotInstalled
+from codoctopus.llm.base import Provider, ProviderError, ProviderNotInstalled
 from codoctopus.llm.schema import to_strict_schema
 from codoctopus.llm.types import Completion, Message, StopReason, ToolCall, ToolSpec, Usage
 
@@ -61,10 +61,26 @@ class OpenAIProvider(Provider):
         except ImportError as exc:  # pragma: no cover - depends on install extras
             raise ProviderNotInstalled(self.name, "openai") from exc
         self._client = AsyncOpenAI(**_client_kwargs(api_key, base_url))
+        self._api_key = api_key
+        self._base_url = base_url
+        # A custom base_url means this is some other OpenAI-*compatible*
+        # gateway (LM Studio, vLLM, ...), not the real OpenAI API — its own
+        # catalog decides what "the default model" is, not OpenAI's
+        # "gpt-4.1" (which such a gateway is never going to have loaded).
+        # Resolving that needs a network call, so it's deferred to the first
+        # actual request rather than done in __init__.
+        self._needs_default_model = base_url is not None and model is None
 
     @property
     def supports_structured_output(self) -> bool:
         return True
+
+    async def _resolve_default_model(self) -> None:
+        models = await list_models(api_key=self._api_key, base_url=self._base_url)
+        if not models:
+            raise ProviderError(f"No models available at {self._base_url}")
+        self.model = models[0]
+        self._needs_default_model = False
 
     async def _complete(
         self,
@@ -76,6 +92,9 @@ class OpenAIProvider(Provider):
         max_tokens: int,
         **kwargs: Any,
     ) -> Completion:
+        if self._needs_default_model:
+            await self._resolve_default_model()
+
         payload: list[dict[str, Any]] = []
         if system:
             payload.append({"role": "system", "content": system})
