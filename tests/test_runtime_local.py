@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -246,6 +247,110 @@ async def test_on_event_accepts_an_async_handler(workspace: Path):
     await executor.run(plan)
 
     assert events == ["step_started", "step_done", "run_done"]
+
+
+@pytest.mark.anyio
+async def test_independent_step_survives_an_unrelated_failure(workspace: Path):
+    class MixedProvider(Provider):
+        name = "mixed"
+        default_model = "mixed-1"
+
+        async def _complete(self, messages, *, system, tools, output_schema, max_tokens, **kwargs) -> Completion:
+            user_msg = messages[-1].content if messages and messages[-1].content else ""
+            if user_msg == "fail me":
+                raise RuntimeError("boom")
+            await asyncio.sleep(0.05)  # still in flight when s1 fails
+            return Completion(text="done: " + user_msg, model=self.model)
+
+    plan = Plan(
+        goal="independent branch survives",
+        steps=[
+            PlanStep(key="s1", name="S1", role="r1", instruction="fail me"),
+            PlanStep(key="c", name="C", role="rc", instruction="independent work"),
+        ],
+    )
+    executor = LocalExecutor(MixedProvider("mixed-1"), workspace=workspace)
+    result = await executor.run(plan)
+
+    assert result.status == "failed"
+    assert result.step_results["c"] == "done: independent work"
+
+
+@pytest.mark.anyio
+async def test_dependent_step_is_reported_as_skipped_not_as_its_own_failure(workspace: Path):
+    class FailingProvider(Provider):
+        name = "failing"
+        default_model = "failing-1"
+
+        async def _complete(self, messages, *, system, tools, output_schema, max_tokens, **kwargs) -> Completion:
+            raise RuntimeError("boom")
+
+    plan = Plan(
+        goal="cascade reporting",
+        steps=[
+            PlanStep(key="s1", name="S1", role="r1", instruction="fail me"),
+            PlanStep(key="s2", name="S2", role="r2", instruction="downstream", depends_on=["s1"]),
+        ],
+    )
+    events: list[tuple[str, dict]] = []
+    executor = LocalExecutor(
+        FailingProvider("failing-1"), workspace=workspace, on_event=lambda e, d: events.append((e, d))
+    )
+    result = await executor.run(plan)
+
+    # The run's headline error is the real cause, not the cascaded one.
+    assert result.error == "Provider 'failing' call failed: boom"
+
+    s2_failed = next(d for e, d in events if e == "step_failed" and d["key"] == "s2")
+    assert "skipped" in s2_failed["error"]
+    assert "s1" in s2_failed["error"]
+
+
+@pytest.mark.anyio
+async def test_a_failing_for_each_item_is_reported_and_its_siblings_still_complete(workspace: Path):
+    class MixedProvider(Provider):
+        name = "mixed"
+        default_model = "mixed-1"
+
+        async def _complete(self, messages, *, system, tools, output_schema, max_tokens, **kwargs) -> Completion:
+            user_msg = messages[-1].content if messages and messages[-1].content else ""
+            if user_msg == "list items":
+                return Completion(text='["bad", "good"]', model=self.model)
+            if "bad" in user_msg:
+                raise RuntimeError("item failed")
+            await asyncio.sleep(0.05)  # still in flight when the "bad" item fails
+            return Completion(text="done: " + user_msg, model=self.model)
+
+    plan = Plan(
+        goal="for_each sibling survives",
+        steps=[
+            PlanStep(key="producer", name="P", role="rp", instruction="list items"),
+            PlanStep(
+                key="consumer", name="C", role="rc", instruction="process item: {{item}}", for_each="producer"
+            ),
+        ],
+    )
+    events: list[tuple[str, dict]] = []
+    executor = LocalExecutor(
+        MixedProvider("mixed-1"), workspace=workspace, on_event=lambda e, d: events.append((e, d))
+    )
+    result = await executor.run(plan)
+
+    assert result.status == "failed"
+    # The failing item's own result never lands, but its sibling's does — a
+    # for_each item failing must not orphan/discard its siblings' work.
+    assert "consumer[0]" not in result.step_results
+    assert result.step_results["consumer[1]"] == "done: process item: good"
+
+    # The failing item gets its own step_failed event (not just the group's),
+    # so the GUI doesn't show it stuck on "running" forever.
+    item_failed = next(d for e, d in events if e == "step_failed" and d["key"] == "consumer[0]")
+    assert "item failed" in item_failed["error"]
+    # And step_done for the surviving sibling must land before run_done —
+    # not arrive late as an orphaned background task after the run reported done.
+    assert events.index(("step_done", {"key": "consumer[1]", "result": "done: process item: good"})) < next(
+        i for i, (e, _) in enumerate(events) if e == "run_done"
+    )
 
 
 @pytest.mark.anyio

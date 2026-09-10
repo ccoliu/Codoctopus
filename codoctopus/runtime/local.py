@@ -29,6 +29,10 @@ from codoctopus.tools import Tool, ToolRegistry
 EventCallback = Callable[[str, dict[str, Any]], Any]
 
 
+class _SkippedError(RuntimeError):
+    """A step's dependency failed, so it never ran — distinct from the step's own work failing."""
+
+
 def _parse_list_output(raw: str) -> list[Any]:
     """Parse output into a list for for_each expansion."""
     raw = raw.strip()
@@ -141,9 +145,15 @@ class LocalExecutor(Executor):
         }
 
         async def execute_step(s: PlanStep) -> None:
-            # 1) Wait for all upstream dependencies
+            # 1) Wait for all upstream dependencies. A dependency that failed
+            # raises here too (awaiting a future with an exception set) — wrap
+            # it so the resulting step_failed event reads as "skipped because
+            # X failed", not as if this step's own work threw that error.
             for dep in s.depends_on:
-                await step_futures[dep]
+                try:
+                    await step_futures[dep]
+                except Exception as exc:
+                    raise _SkippedError(f"skipped: upstream step '{dep}' failed: {exc}") from exc
 
             # 2) for_each dynamic expansion
             if s.for_each is not None:
@@ -153,14 +163,27 @@ class LocalExecutor(Executor):
                 async def run_item(idx: int, item: Any) -> None:
                     item_key = f"{s.key}[{idx}]"
                     await self._emit("step_started", {"key": item_key})
-                    rendered = _render_instruction(s.instruction, step_results, item=item)
-                    tools = self._get_tools_for_step(s.tools)
-                    agent = Agent(self.provider, system=s.role, tools=tools)
-                    res = await agent.run(rendered)
-                    step_results[item_key] = res.text
-                    await self._emit("step_done", {"key": item_key, "result": res.text})
+                    try:
+                        rendered = _render_instruction(s.instruction, step_results, item=item)
+                        tools = self._get_tools_for_step(s.tools)
+                        agent = Agent(self.provider, system=s.role, tools=tools)
+                        res = await agent.run(rendered)
+                        step_results[item_key] = res.text
+                        await self._emit("step_done", {"key": item_key, "result": res.text})
+                    except Exception as exc:
+                        await self._emit("step_failed", {"key": item_key, "error": str(exc)})
+                        raise
 
-                await asyncio.gather(*(run_item(i, item) for i, item in enumerate(items)))
+                # return_exceptions=True: one item failing must not orphan its
+                # siblings — they keep running and their results/events still
+                # land, instead of finishing invisibly after the run already
+                # reported done (see run()'s matching use of it, below).
+                item_results = await asyncio.gather(
+                    *(run_item(i, item) for i, item in enumerate(items)), return_exceptions=True
+                )
+                item_errors = [r for r in item_results if isinstance(r, BaseException)]
+                if item_errors:
+                    raise item_errors[0]
             else:
                 # 3) Regular single step execution
                 await self._emit("step_started", {"key": s.key})
@@ -184,20 +207,24 @@ class LocalExecutor(Executor):
 
         tasks = [asyncio.create_task(step_wrapper(s)) for s in plan.steps]
 
-        try:
-            await asyncio.gather(*tasks)
+        # return_exceptions=True: one step failing must not cancel unrelated
+        # steps still in flight — only steps that actually depend on the
+        # failure (directly or transitively) raise, via the _SkippedError
+        # path above. Everything else is left to finish and its result kept,
+        # matching Coworkify's executor (which only cancels real downstream
+        # dependents, not the whole workflow).
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        errors = [r for r in results if isinstance(r, BaseException)]
+
+        if not errors:
             await self._emit("run_done", {"status": "success", "step_results": step_results})
             return PlanResult(plan=plan, status="success", step_results=step_results)
-        except Exception as exc:
-            for t in tasks:
-                if not t.done():
-                    t.cancel()
-            await self._emit(
-                "run_done", {"status": "failed", "step_results": step_results, "error": str(exc)}
-            )
-            return PlanResult(
-                plan=plan,
-                status="failed",
-                step_results=step_results,
-                error=str(exc),
-            )
+
+        # Prefer a genuine failure over a cascaded "skipped" one when
+        # reporting the run's headline error — that's the one worth surfacing.
+        root_errors = [e for e in errors if not isinstance(e, _SkippedError)]
+        primary = root_errors[0] if root_errors else errors[0]
+        await self._emit(
+            "run_done", {"status": "failed", "step_results": step_results, "error": str(primary)}
+        )
+        return PlanResult(plan=plan, status="failed", step_results=step_results, error=str(primary))
