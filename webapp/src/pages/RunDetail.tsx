@@ -101,6 +101,11 @@ export function RunDetail() {
             {run.domain ?? 'general'} &middot; {run.executor}
             {!connected && !finished && <span className="ml-2 text-status-warning">(reconnecting…)</span>}
           </p>
+          {run.workspace && (
+            <p className="mt-1 truncate font-mono text-xs text-ink-muted" title={run.workspace}>
+              {run.workspace}
+            </p>
+          )}
         </div>
         <StatusBadge status={run.status} />
       </div>

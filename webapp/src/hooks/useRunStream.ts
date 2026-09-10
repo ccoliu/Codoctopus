@@ -40,7 +40,9 @@ export function useRunStream(runId: string | undefined): RunStreamState {
           break
         }
         case 'plan_ready':
-          setRun((prev) => (prev ? { ...prev, plan: msg.data.plan, status: 'running' } : prev))
+          setRun((prev) =>
+            prev ? { ...prev, plan: msg.data.plan, workspace: msg.data.workspace, status: 'running' } : prev,
+          )
           break
         case 'step_started':
           setSteps((prev) => ({ ...prev, [msg.data.key]: { key: msg.data.key, status: 'running' } }))

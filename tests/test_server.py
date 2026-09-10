@@ -183,6 +183,41 @@ def test_get_run_after_completion_has_the_final_result(client: TestClient):
     assert detail["plan"]["goal"] == "ship it"
 
 
+def test_a_local_runs_workspace_path_is_reported(client: TestClient):
+    # Each run's directory is named by its (opaque) id — this is the only way
+    # to find out where a run actually wrote its files without hunting
+    # through .codoctopus/workspace/ by hand.
+    created = client.post(
+        "/api/runs",
+        json={"goal": "ship it", "model": "scripted:x", "worker_model": "scripted:x", "executor": "local"},
+    ).json()
+
+    events = _collect_stream(client, created["id"])
+    plan_ready = next(e for e in events if e["event"] == "plan_ready")
+    assert plan_ready["data"]["workspace"]
+    assert created["id"] in plan_ready["data"]["workspace"]
+
+    detail = client.get(f"/api/runs/{created['id']}").json()
+    assert detail["workspace"] == plan_ready["data"]["workspace"]
+
+
+def test_a_coworkify_runs_workspace_is_reported_as_none(client: TestClient, monkeypatch):
+    # Its files live on whichever Coworkify worker executed it, not here —
+    # reporting a local path would be actively misleading.
+    monkeypatch.delenv("CODOCTOPUS_COWORKIFY_URL", raising=False)
+    created = client.post(
+        "/api/runs",
+        json={"goal": "ship it", "model": "scripted:x", "executor": "coworkify"},
+    ).json()
+
+    events = _collect_stream(client, created["id"])
+    plan_ready = next(e for e in events if e["event"] == "plan_ready")
+    assert plan_ready["data"]["workspace"] is None
+
+    detail = client.get(f"/api/runs/{created['id']}").json()
+    assert detail["workspace"] is None
+
+
 def test_connecting_after_the_run_finished_still_gets_the_full_history(client: TestClient):
     created = client.post(
         "/api/runs", json={"goal": "ship it", "model": "scripted:x", "worker_model": "scripted:x"}

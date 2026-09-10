@@ -29,6 +29,8 @@ export interface RunDetail extends RunSummary {
   plan: Plan | null
   step_results: Record<string, string>
   error: string | null
+  /** Where a local run's tools actually read/wrote; null for a coworkify run (that filesystem is on the worker, not here). */
+  workspace: string | null
 }
 
 export interface RunCreateBody {
@@ -61,7 +63,7 @@ export interface StepRunState {
 
 export type StreamEvent =
   | { event: 'snapshot'; data: RunDetail }
-  | { event: 'plan_ready'; data: { plan: Plan } }
+  | { event: 'plan_ready'; data: { plan: Plan; workspace: string | null } }
   | { event: 'step_started'; data: { key: string } }
   | { event: 'step_done'; data: { key: string; result: string } }
   | { event: 'step_failed'; data: { key: string; error: string } }

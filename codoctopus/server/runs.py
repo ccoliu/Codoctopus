@@ -57,6 +57,13 @@ class Run:
     plan: Plan | None = None
     step_results: dict[str, str] = field(default_factory=dict)
     error: str | None = None
+    #: Where a LocalExecutor run's tools actually read/wrote — set once the
+    #: run's workspace directory is known, None for a coworkify run (that
+    #: filesystem is on whichever Coworkify worker executed it, not here).
+    #: Every run's directory is named by its id (an opaque uuid), and
+    #: otherwise stays undiscoverable — this is what lets the GUI show it
+    #: instead of someone hunting through .codoctopus/workspace/ by hand.
+    workspace: str | None = None
 
     def to_summary(self) -> dict[str, Any]:
         return {
@@ -74,6 +81,7 @@ class Run:
             "plan": self.plan.model_dump() if self.plan else None,
             "step_results": self.step_results,
             "error": self.error,
+            "workspace": self.workspace,
         }
 
 
@@ -171,18 +179,24 @@ class RunManager:
             )
             run.plan = plan
             run.status = "running"
-            await self._broadcast(run_id, "plan_ready", {"plan": plan.model_dump()})
-
-            ws_path = Path(workspace) if workspace else self._settings.workspace / run_id
-            ws_path.mkdir(parents=True, exist_ok=True)
 
             if run.executor == "coworkify":
                 # CoworkifyExecutor has no on_event hook (Coworkify's own DAG
                 # scheduling runs the steps) — the GUI gets plan_ready above
                 # and one run_done at the end instead of per-step updates.
+                # Its filesystem is on whichever Coworkify worker executes
+                # it, not here, so there's no local workspace path to report.
+                await self._broadcast(run_id, "plan_ready", {"plan": plan.model_dump(), "workspace": None})
                 executor = CoworkifyExecutor.from_settings(self._settings)
                 result = await executor.run(plan)
             else:
+                ws_path = Path(workspace) if workspace else self._settings.workspace / run_id
+                ws_path.mkdir(parents=True, exist_ok=True)
+                run.workspace = str(ws_path)
+                await self._broadcast(
+                    run_id, "plan_ready", {"plan": plan.model_dump(), "workspace": run.workspace}
+                )
+
                 worker_provider = get_provider(
                     worker_model or self._settings.worker_model,
                     **_provider_kwargs(worker_api_key, worker_base_url),
