@@ -9,9 +9,10 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from codoctopus.agents import Agent
 from codoctopus.llm import Provider
@@ -19,6 +20,13 @@ from codoctopus.planning.models import Plan, PlanStep
 from codoctopus.planning.validate import validate_plan
 from codoctopus.runtime.base import Executor, PlanResult
 from codoctopus.tools import Tool, ToolRegistry
+
+#: Called as on_event(event, data) at each step/run lifecycle point — see
+#: LocalExecutor.run's docstring for the event names and payload shapes. May
+#: be sync or async (e.g. a GUI backend awaiting a WebSocket send); a run
+#: proceeds even if a handler raises, since progress reporting must never be
+#: able to break execution.
+EventCallback = Callable[[str, dict[str, Any]], Any]
 
 
 def _parse_list_output(raw: str) -> list[Any]:
@@ -73,22 +81,45 @@ class LocalExecutor(Executor):
         workspace: Path,
         artifact_dir: Path | None = None,
         tools: ToolRegistry | list[Tool] | None = None,
+        on_event: EventCallback | None = None,
     ) -> None:
         self.provider = provider
         self.workspace = Path(workspace)
         if isinstance(tools, ToolRegistry):
             self._registry = tools
-        elif isinstance(tools, list):   
+        elif isinstance(tools, list):
             self._registry = ToolRegistry(tools, workspace=self.workspace)
         else:
             self._registry = None
+        self._on_event = on_event
 
     def _get_tools_for_step(self, tool_names: list[str]) -> ToolRegistry | None:
         if not tool_names or not isinstance(self._registry, ToolRegistry):
             return None
         return self._registry.subset(tool_names)
 
+    async def _emit(self, event: str, data: dict[str, Any]) -> None:
+        if self._on_event is None:
+            return
+        try:
+            result = self._on_event(event, data)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            pass  # a broken progress listener must never take the run down with it
+
     async def run(self, plan: Plan) -> PlanResult:
+        """
+        Execute `plan`, reporting progress through `on_event` (if given) as:
+        - ("step_started", {"key": ...})
+        - ("step_done", {"key": ..., "result": ...})
+        - ("step_failed", {"key": ..., "error": ...})
+        - ("run_done", {"status": "success", "step_results": {...}})
+        - ("run_done", {"status": "failed", "step_results": {...}, "error": ...})
+
+        A for_each step reports one step_started/step_done per expanded item,
+        keyed like its result (e.g. "consumer[0]"), not once for the group.
+        """
         if not plan.steps:
             return PlanResult(plan=plan, status="failed", error="No steps in plan")
 
@@ -120,20 +151,25 @@ class LocalExecutor(Executor):
                 items = _parse_list_output(source_raw)
 
                 async def run_item(idx: int, item: Any) -> None:
+                    item_key = f"{s.key}[{idx}]"
+                    await self._emit("step_started", {"key": item_key})
                     rendered = _render_instruction(s.instruction, step_results, item=item)
                     tools = self._get_tools_for_step(s.tools)
                     agent = Agent(self.provider, system=s.role, tools=tools)
                     res = await agent.run(rendered)
-                    step_results[f"{s.key}[{idx}]"] = res.text
+                    step_results[item_key] = res.text
+                    await self._emit("step_done", {"key": item_key, "result": res.text})
 
                 await asyncio.gather(*(run_item(i, item) for i, item in enumerate(items)))
             else:
                 # 3) Regular single step execution
+                await self._emit("step_started", {"key": s.key})
                 rendered = _render_instruction(s.instruction, step_results)
                 tools = self._get_tools_for_step(s.tools)
                 agent = Agent(self.provider, system=s.role, tools=tools)
                 res = await agent.run(rendered)
                 step_results[s.key] = res.text
+                await self._emit("step_done", {"key": s.key, "result": res.text})
 
         async def step_wrapper(s: PlanStep) -> None:
             try:
@@ -143,17 +179,22 @@ class LocalExecutor(Executor):
             except Exception as exc:
                 if not step_futures[s.key].done():
                     step_futures[s.key].set_exception(exc)
+                await self._emit("step_failed", {"key": s.key, "error": str(exc)})
                 raise
 
         tasks = [asyncio.create_task(step_wrapper(s)) for s in plan.steps]
 
         try:
             await asyncio.gather(*tasks)
+            await self._emit("run_done", {"status": "success", "step_results": step_results})
             return PlanResult(plan=plan, status="success", step_results=step_results)
         except Exception as exc:
             for t in tasks:
                 if not t.done():
                     t.cancel()
+            await self._emit(
+                "run_done", {"status": "failed", "step_results": step_results, "error": str(exc)}
+            )
             return PlanResult(
                 plan=plan,
                 status="failed",

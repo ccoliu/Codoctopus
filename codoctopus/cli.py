@@ -24,26 +24,7 @@ from codoctopus.llm import ProviderError, get_provider
 from codoctopus.planning import Plan, PlanningError, make_plan
 from codoctopus.planning.validate import PlanValidationError
 from codoctopus.runtime import CoworkifyExecutor, LocalExecutor, PlanResult
-from codoctopus.tools import ToolRegistry
-from codoctopus.tools.filesystem import ListFilesTool, ReadFileTool, WriteFileTool
-from codoctopus.tools.http import HttpRequestTool
-from codoctopus.tools.testing import RunTestsTool
-
-#: Every tool a step can ask for by name in PlanStep.tools. A step only gets
-#: the ones it actually names (see ToolRegistry.subset in LocalExecutor) —
-#: this dict just says what's available to be asked for, same list
-#: Coworkify's agent_step handler offers.
-_BUILTIN_TOOLS = {
-    "read_file": ReadFileTool,
-    "write_file": WriteFileTool,
-    "list_files": ListFilesTool,
-    "http_request": HttpRequestTool,
-    "run_tests": RunTestsTool,
-}
-
-
-def _build_tool_registry(workspace: Path) -> ToolRegistry:
-    return ToolRegistry([cls() for cls in _BUILTIN_TOOLS.values()], workspace=workspace)
+from codoctopus.tools.builtin import BUILTIN_TOOLS, build_tool_registry
 
 
 def _print_plan(plan: Plan) -> None:
@@ -82,7 +63,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     planner_provider = get_provider(args.model or settings.planner_model)
     plan = await make_plan(
-        planner_provider, args.goal, domain=domain, available_tools=list(_BUILTIN_TOOLS)
+        planner_provider, args.goal, domain=domain, available_tools=list(BUILTIN_TOOLS)
     )
 
     if not args.json:
@@ -100,7 +81,7 @@ async def _run(args: argparse.Namespace) -> int:
         executor = CoworkifyExecutor.from_settings(settings)
     else:
         worker_provider = get_provider(args.worker_model or settings.worker_model)
-        executor = LocalExecutor(worker_provider, workspace=workspace, tools=_build_tool_registry(workspace))
+        executor = LocalExecutor(worker_provider, workspace=workspace, tools=build_tool_registry(workspace))
 
     result = await executor.run(plan)
 
@@ -110,6 +91,22 @@ async def _run(args: argparse.Namespace) -> int:
         _print_result(result)
 
     return 0 if result.status == "success" else 1
+
+
+def _serve(args: argparse.Namespace) -> int:
+    try:
+        import uvicorn
+    except ImportError:
+        print(
+            "The 'serve' command needs the 'server' extra. Install it with: pip install codoctopus[server]",
+            file=sys.stderr,
+        )
+        return 1
+
+    from codoctopus.server import create_app
+
+    uvicorn.run(create_app(), host=args.host, port=args.port)
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -132,12 +129,19 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--dry-run", action="store_true", help="Only plan; don't execute it")
     run_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON instead of text")
 
+    serve_parser = subparsers.add_parser("serve", help="Run the GUI backend (HTTP + WebSocket API)")
+    serve_parser.add_argument("--host", default="127.0.0.1", help="Interface to bind to")
+    serve_parser.add_argument("--port", type=int, default=8420, help="Port to bind to")
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "serve":
+        return _serve(args)
 
     if args.command != "run":
         parser.print_help()

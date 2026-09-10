@@ -141,6 +141,114 @@ async def test_step_failure_stops_execution(workspace: Path):
     assert "s2" not in result.step_results
 
 @pytest.mark.anyio
+async def test_on_event_reports_step_and_run_lifecycle(workspace: Path):
+    provider = ScriptedProvider(responses={"step 1 instruction": "result 1"})
+    plan = Plan(
+        goal="run one step",
+        steps=[PlanStep(key="s1", name="Step 1", role="role 1", instruction="step 1 instruction")],
+    )
+    events: list[tuple[str, dict]] = []
+    executor = LocalExecutor(provider, workspace=workspace, on_event=lambda e, d: events.append((e, d)))
+
+    result = await executor.run(plan)
+
+    assert result.status == "success"
+    assert events == [
+        ("step_started", {"key": "s1"}),
+        ("step_done", {"key": "s1", "result": "result 1"}),
+        ("run_done", {"status": "success", "step_results": {"s1": "result 1"}}),
+    ]
+
+
+@pytest.mark.anyio
+async def test_on_event_reports_one_step_per_for_each_item(workspace: Path):
+    provider = ScriptedProvider(
+        responses={"list items": '["a", "b"]', "process item: a": "a done", "process item: b": "b done"}
+    )
+    plan = Plan(
+        goal="run for_each steps",
+        steps=[
+            PlanStep(key="producer", name="Producer", role="rp", instruction="list items"),
+            PlanStep(
+                key="consumer",
+                name="Consumer",
+                role="rc",
+                instruction="process item: {{item}}",
+                for_each="producer",
+            ),
+        ],
+    )
+    events: list[tuple[str, dict]] = []
+    executor = LocalExecutor(provider, workspace=workspace, on_event=lambda e, d: events.append((e, d)))
+
+    await executor.run(plan)
+
+    consumer_keys = {d["key"] for e, d in events if e == "step_started" and d["key"].startswith("consumer")}
+    assert consumer_keys == {"consumer[0]", "consumer[1]"}
+
+
+@pytest.mark.anyio
+async def test_on_event_reports_step_failed_and_run_done_failed(workspace: Path):
+    class FailingProvider(Provider):
+        name = "failing"
+        default_model = "failing-1"
+
+        async def _complete(self, messages, *, system, tools, output_schema, max_tokens, **kwargs) -> Completion:
+            raise RuntimeError("boom")
+
+    plan = Plan(goal="fail", steps=[PlanStep(key="s1", name="S1", role="r1", instruction="fail me")])
+    events: list[tuple[str, dict]] = []
+    executor = LocalExecutor(
+        FailingProvider("failing-1"), workspace=workspace, on_event=lambda e, d: events.append((e, d))
+    )
+
+    result = await executor.run(plan)
+
+    assert result.status == "failed"
+    failed_events = [d for e, d in events if e == "step_failed" and d["key"] == "s1"]
+    assert len(failed_events) == 1
+    assert "boom" in failed_events[0]["error"]
+    assert events[-1][0] == "run_done"
+    assert events[-1][1]["status"] == "failed"
+
+
+@pytest.mark.anyio
+async def test_a_broken_event_handler_does_not_break_the_run(workspace: Path):
+    provider = ScriptedProvider(responses={"step 1 instruction": "result 1"})
+    plan = Plan(
+        goal="run one step",
+        steps=[PlanStep(key="s1", name="Step 1", role="role 1", instruction="step 1 instruction")],
+    )
+
+    def broken_handler(event, data):
+        raise ValueError("listener bug")
+
+    executor = LocalExecutor(provider, workspace=workspace, on_event=broken_handler)
+    result = await executor.run(plan)
+
+    assert result.status == "success"
+    assert result.step_results["s1"] == "result 1"
+
+
+@pytest.mark.anyio
+async def test_on_event_accepts_an_async_handler(workspace: Path):
+    provider = ScriptedProvider(responses={"step 1 instruction": "result 1"})
+    plan = Plan(
+        goal="run one step",
+        steps=[PlanStep(key="s1", name="Step 1", role="role 1", instruction="step 1 instruction")],
+    )
+    events: list[str] = []
+
+    async def async_handler(event, data):
+        events.append(event)
+
+    executor = LocalExecutor(provider, workspace=workspace, on_event=async_handler)
+    await executor.run(plan)
+
+    assert events == ["step_started", "step_done", "run_done"]
+
+
+@pytest.mark.anyio
 async def test_plans_with_cyclic_dependency(workspace: Path):
     provider = ScriptedProvider(
         responses={
