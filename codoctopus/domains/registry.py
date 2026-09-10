@@ -16,6 +16,7 @@ from codoctopus.domains.base import Domain
 #: domain name -> (module path, class name), imported lazily
 _BUILTIN: dict[str, tuple[str, str]] = {
     "coding": ("codoctopus.domains.coding", "CodingDomain"),
+    "research": ("codoctopus.domains.research", "ResearchDomain"),
 }
 
 _CUSTOM: dict[str, Callable[[], Domain]] = {}
