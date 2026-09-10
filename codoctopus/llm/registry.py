@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from codoctopus.llm.base import Provider, ProviderError
 
@@ -20,11 +20,19 @@ _BUILTIN: dict[str, tuple[str, str]] = {
 }
 
 _CUSTOM: dict[str, Callable[..., Provider]] = {}
+_CUSTOM_LIST_MODELS: dict[str, Callable[..., Awaitable[list[str]]]] = {}
 
 
-def register_provider(name: str, factory: Callable[..., Provider]) -> None:
+def register_provider(
+    name: str,
+    factory: Callable[..., Provider],
+    *,
+    list_models: Callable[..., Awaitable[list[str]]] | None = None,
+) -> None:
     """Add a provider so `get_provider("<name>:<model>")` can reach it."""
     _CUSTOM[name] = factory
+    if list_models is not None:
+        _CUSTOM_LIST_MODELS[name] = list_models
 
 
 def available_providers() -> list[str]:
@@ -70,3 +78,30 @@ def get_provider(ref: str, **options: Any) -> Provider:
         raise
     except Exception as exc:
         raise ProviderError(f"Could not construct provider '{name}': {exc}") from exc
+
+
+async def list_models(name: str, **options: Any) -> list[str]:
+    """
+    The model names `name` currently has access to, e.g. for a GUI to offer
+    as choices instead of free-text (options are the same kwargs get_provider
+    takes — api_key, base_url, ...). Not every provider need support this.
+    """
+    if name in _CUSTOM_LIST_MODELS:
+        fn = _CUSTOM_LIST_MODELS[name]
+    elif name in _BUILTIN:
+        module_path, _ = _BUILTIN[name]
+        module = __import__(module_path, fromlist=["list_models"])
+        fn = getattr(module, "list_models", None)
+        if fn is None:
+            raise ProviderError(f"Provider '{name}' does not support listing models")
+    elif name in _CUSTOM:
+        raise ProviderError(f"Provider '{name}' does not support listing models")
+    else:
+        raise ProviderError(f"Unknown provider '{name}'. Available: {', '.join(available_providers())}")
+
+    try:
+        return await fn(**options)
+    except ProviderError:
+        raise
+    except Exception as exc:
+        raise ProviderError(f"Could not list models for '{name}': {exc}") from exc

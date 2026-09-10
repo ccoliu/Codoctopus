@@ -20,6 +20,19 @@ from codoctopus.llm.types import Completion, Message, StopReason, ToolCall, Tool
 DEFAULT_HOST = "http://localhost:11434"
 
 
+async def list_models(*, base_url: str | None = None, **_: Any) -> list[str]:
+    """Whatever's actually pulled locally — Ollama needs no key, just a reachable host."""
+    import httpx
+
+    host = (base_url or DEFAULT_HOST).rstrip("/")
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(f"{host}/api/tags")
+        if response.status_code >= 400:
+            raise ProviderError(f"Ollama returned {response.status_code}: {response.text[:300]}")
+        data = response.json()
+    return sorted(m["name"] for m in data.get("models", []))
+
+
 class OllamaProvider(Provider):
     name = "ollama"
     default_model = "llama3.1"

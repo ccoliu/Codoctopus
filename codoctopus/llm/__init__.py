@@ -14,6 +14,7 @@ from codoctopus.llm.base import (
 from codoctopus.llm.registry import (
     available_providers,
     get_provider,
+    list_models,
     parse_model_ref,
     register_provider,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "Usage",
     "available_providers",
     "get_provider",
+    "list_models",
     "parse_model_ref",
     "register_provider",
 ]

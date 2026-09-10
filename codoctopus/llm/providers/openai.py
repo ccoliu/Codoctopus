@@ -21,6 +21,28 @@ _STOP_REASONS = {
 }
 
 
+def _client_kwargs(api_key: str | None, base_url: str | None) -> dict[str, Any]:
+    # base_url lets this adapter also talk to any OpenAI-compatible local
+    # server (LM Studio, vLLM, etc); those don't check the key's value.
+    kwargs: dict[str, Any] = {}
+    if api_key:
+        kwargs["api_key"] = api_key
+    if base_url:
+        kwargs["base_url"] = base_url
+        kwargs.setdefault("api_key", "not-needed")
+    return kwargs
+
+
+async def list_models(*, api_key: str | None = None, base_url: str | None = None, **_: Any) -> list[str]:
+    try:
+        from openai import AsyncOpenAI
+    except ImportError as exc:  # pragma: no cover - depends on install extras
+        raise ProviderNotInstalled("openai", "openai") from exc
+    client = AsyncOpenAI(**_client_kwargs(api_key, base_url))
+    page = await client.models.list()
+    return sorted([m.id async for m in page])
+
+
 class OpenAIProvider(Provider):
     name = "openai"
     default_model = "gpt-4.1"
@@ -38,15 +60,7 @@ class OpenAIProvider(Provider):
             from openai import AsyncOpenAI
         except ImportError as exc:  # pragma: no cover - depends on install extras
             raise ProviderNotInstalled(self.name, "openai") from exc
-        # base_url lets this adapter also talk to any OpenAI-compatible local
-        # server (LM Studio, vLLM, etc); those don't check the key's value.
-        client_kwargs: dict[str, Any] = {}
-        if api_key:
-            client_kwargs["api_key"] = api_key
-        if base_url:
-            client_kwargs["base_url"] = base_url
-            client_kwargs.setdefault("api_key", "not-needed")
-        self._client = AsyncOpenAI(**client_kwargs)
+        self._client = AsyncOpenAI(**_client_kwargs(api_key, base_url))
 
     @property
     def supports_structured_output(self) -> bool:

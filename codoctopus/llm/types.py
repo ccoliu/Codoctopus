@@ -33,6 +33,10 @@ class ToolCall:
     id: str
     name: str
     arguments: dict[str, Any]
+    #: Provider-specific data a provider needs back verbatim on a later turn
+    #: to replay this same call (e.g. Gemini's thought_signature) — opaque to
+    #: everything else, and empty for providers that don't need it.
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

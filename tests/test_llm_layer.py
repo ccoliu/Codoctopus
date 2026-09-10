@@ -22,6 +22,7 @@ from codoctopus.llm import (
     ToolResult,
     ToolSpec,
     get_provider,
+    list_models,
     register_provider,
 )
 from codoctopus.llm.schema import to_strict_schema
@@ -225,6 +226,57 @@ def test_an_exception_raised_while_constructing_a_provider_is_wrapped_too():
 
     with pytest.raises(ProviderError, match="Could not construct provider 'broken'"):
         get_provider("broken:model")
+
+
+# --- list_models --------------------------------------------------------
+
+
+async def test_list_models_dispatches_to_a_custom_providers_list_models():
+    async def fake_list_models(**kw):
+        return ["model-a", "model-b"]
+
+    register_provider("scripted", lambda model=None, **kw: ScriptedProvider(model, **kw), list_models=fake_list_models)
+
+    assert await list_models("scripted") == ["model-a", "model-b"]
+
+
+async def test_list_models_passes_options_through():
+    captured = {}
+
+    async def fake_list_models(**kw):
+        captured.update(kw)
+        return []
+
+    register_provider("scripted", lambda model=None, **kw: ScriptedProvider(model, **kw), list_models=fake_list_models)
+
+    await list_models("scripted", api_key="secret", base_url="http://x")
+
+    assert captured == {"api_key": "secret", "base_url": "http://x"}
+
+
+async def test_list_models_wraps_an_unexpected_exception():
+    async def broken_list_models(**kw):
+        raise TypeError("vendor SDK blew up")
+
+    register_provider("scripted", lambda model=None, **kw: ScriptedProvider(model, **kw), list_models=broken_list_models)
+
+    with pytest.raises(ProviderError, match="Could not list models for 'scripted'"):
+        await list_models("scripted")
+
+
+async def test_list_models_for_a_provider_without_support_raises_cleanly():
+    # A name no other test in this file registers a list_models for — reusing
+    # "scripted" here would be order-dependent: register_provider only adds
+    # to the list_models registry, it never clears a name's previous entry.
+    register_provider("scripted-no-list-models", lambda model=None, **kw: ScriptedProvider(model, **kw))
+
+    with pytest.raises(ProviderError, match="does not support listing models"):
+        await list_models("scripted-no-list-models")
+
+
+async def test_list_models_for_an_unknown_provider_raises_cleanly():
+    with pytest.raises(ProviderError, match="Unknown provider 'nope'"):
+        await list_models("nope")
 
 
 # --- transcript round-trip -------------------------------------------

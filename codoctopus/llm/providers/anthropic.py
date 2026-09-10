@@ -28,6 +28,16 @@ _STOP_REASONS = {
 }
 
 
+async def list_models(*, api_key: str | None = None, **_: Any) -> list[str]:
+    try:
+        from anthropic import AsyncAnthropic
+    except ImportError as exc:  # pragma: no cover - depends on install extras
+        raise ProviderNotInstalled("anthropic", "anthropic") from exc
+    client = AsyncAnthropic(api_key=api_key) if api_key else AsyncAnthropic()
+    page = await client.models.list()
+    return sorted([m.id async for m in page])
+
+
 class AnthropicProvider(Provider):
     name = "anthropic"
     default_model = "claude-opus-5"
