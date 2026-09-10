@@ -2,6 +2,30 @@
 
 AI-powered code analysis, generation, and plagiarism-checking platform.
 
+## GUI — Local Development
+
+The v2 GUI is two processes: a FastAPI backend (`codoctopus serve`) and a Vite dev
+server (`webapp/`) that proxies `/api/*` to it. Both need to be running.
+
+```bash
+# Terminal 1 — backend (needs the `server` extra: pip install -e ".[server]")
+codoctopus serve --port 8420
+
+# Terminal 2 — frontend
+cd webapp
+npm install   # first time only
+npm run dev   # http://localhost:5174
+```
+
+If the frontend logs `ECONNREFUSED 127.0.0.1:8420` for `/api/*` requests, the backend
+isn't running (or died) — start it in Terminal 1 and refresh. Provider API keys are
+entered in the GUI's own Settings page (saved to the browser's `localStorage`, sent
+only with the runs you start) — no `.env` needed on the backend for that.
+
+See `codoctopus/server/` (backend) and `webapp/` (frontend) for the implementation.
+The rest of this README predates the v2 rewrite and describes the old v1 Flask
+backend under `backend/`, which the current `codoctopus` package has replaced.
+
 ## Architecture
 
 ```
