@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+import uuid
 from typing import Any
 
 import httpx
@@ -72,12 +73,23 @@ class CoworkifyExecutor(Executor):
     async def run(self, plan: Plan) -> PlanResult:
         validate_plan(plan)
 
+        # Every agent_step task that gets a `workspace` in its payload shares
+        # that exact directory (see coworkify's handler.py — it falls back to
+        # one directory shared across *every* agent_step ever run when
+        # nothing is passed). Scoping it to a fresh id per run.() call means
+        # two concurrent (or sequential) runs writing files of the same name
+        # no longer clobber each other.
+        run_workspace = f"/tmp/codoctopus-agent-steps/{uuid.uuid4().hex}"
+
         async with httpx.AsyncClient(
             base_url=self.base_url,
             headers={"Authorization": f"Bearer {self.token}"},
             timeout=30.0,
         ) as client:
-            created = await client.post("/workflows/", json=self._to_workflow_create(plan))
+            created = await client.post(
+                "/workflows/",
+                json={"name": plan.goal[:255] or "codoctopus plan", "steps": self._to_workflow_steps(plan, run_workspace)},
+            )
             created.raise_for_status()
             workflow_id = created.json()["id"]
 
@@ -98,30 +110,62 @@ class CoworkifyExecutor(Executor):
             error=error,
         )
 
-    def _to_workflow_create(self, plan: Plan) -> dict[str, Any]:
-        return {
-            "name": plan.goal[:255] or "codoctopus plan",
-            "steps": [
-                {
-                    "key": step.key,
-                    # Set to step.key, not step.name, so the polling response's
-                    # task_name can be mapped straight back to this step — see
-                    # the module docstring.
-                    "name": step.key,
-                    "task_type": "agent_step",
-                    "payload": {
-                        "role": step.role,
-                        "instruction": step.instruction,
-                        "model": self.model,
-                        "tools": step.tools,
-                        "step_name": step.name,
-                    },
-                    "depends_on": step.depends_on,
-                    "for_each": step.for_each,
-                }
-                for step in plan.steps
-            ],
-        }
+    async def create_schedule(
+        self, plan: Plan, *, cron_expression: str, name: str, enabled: bool = True
+    ) -> dict[str, Any]:
+        """
+        Register `plan` as a recurring Coworkify schedule instead of running it
+        once. Coworkify's Celery Beat re-creates a fresh workflow from the
+        same steps template each time the cron fires — see its README's
+        Schedules section.
+
+        Unlike run(), every future firing shares one workspace (there is no
+        per-invocation hook to give each a fresh one) — that's a deliberate
+        trade-off: a cron job re-running the same task and landing in the
+        same place each time is the expected shape, not a collision.
+        """
+        validate_plan(plan)
+        workspace = f"/tmp/codoctopus-agent-steps/schedule-{uuid.uuid4().hex}"
+
+        async with httpx.AsyncClient(
+            base_url=self.base_url,
+            headers={"Authorization": f"Bearer {self.token}"},
+            timeout=30.0,
+        ) as client:
+            response = await client.post(
+                "/schedules/",
+                json={
+                    "name": name,
+                    "cron_expression": cron_expression,
+                    "steps": self._to_workflow_steps(plan, workspace),
+                    "enabled": enabled,
+                },
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def _to_workflow_steps(self, plan: Plan, workspace: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "key": step.key,
+                # Set to step.key, not step.name, so the polling response's
+                # task_name can be mapped straight back to this step — see
+                # the module docstring.
+                "name": step.key,
+                "task_type": "agent_step",
+                "payload": {
+                    "role": step.role,
+                    "instruction": step.instruction,
+                    "model": self.model,
+                    "tools": step.tools,
+                    "step_name": step.name,
+                    "workspace": workspace,
+                },
+                "depends_on": step.depends_on,
+                "for_each": step.for_each,
+            }
+            for step in plan.steps
+        ]
 
     async def _poll_until_done(self, client: httpx.AsyncClient, workflow_id: str) -> dict[str, Any] | None:
         deadline = time.monotonic() + self.timeout

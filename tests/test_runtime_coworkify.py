@@ -33,6 +33,7 @@ class FakeCoworkify:
         self.pending_polls = pending_polls
         self.final_status = final_status
         self.created_body: dict | None = None
+        self.created_schedule_body: dict | None = None
         self.polls = 0
         #: task_name (== the WorkflowStepCreate "name" sent in) -> (task_id, status, result, error)
         self.tasks: dict[str, tuple[str, str, dict | None, str | None]] = {}
@@ -61,6 +62,25 @@ class FakeCoworkify:
             ]
             return httpx.Response(
                 201, json={"id": "wf-1", "name": self.created_body["name"], "status": "pending", "steps": steps}
+            )
+
+        if request.method == "POST" and request.url.path == "/schedules/":
+            import json
+
+            self.created_schedule_body = json.loads(request.content)
+            return httpx.Response(
+                201,
+                json={
+                    "id": "sched-1",
+                    "name": self.created_schedule_body["name"],
+                    "cron_expression": self.created_schedule_body["cron_expression"],
+                    "steps": self.created_schedule_body["steps"],
+                    "enabled": self.created_schedule_body["enabled"],
+                    "last_run_at": None,
+                    "next_run_at": "2026-09-11T09:00:00",
+                    "created_at": "2026-09-10T00:00:00",
+                    "updated_at": "2026-09-10T00:00:00",
+                },
             )
 
         if request.method == "GET" and request.url.path == "/workflows/wf-1":
@@ -124,6 +144,8 @@ async def test_plan_steps_become_agent_step_tasks_keyed_by_plan_key(patch_client
     sent = fake.created_body["steps"][0]
     assert sent["name"] == "write"
     assert sent["task_type"] == "agent_step"
+    workspace = sent["payload"].pop("workspace")
+    assert workspace.startswith("/tmp/codoctopus-agent-steps/")
     assert sent["payload"] == {
         "role": "be helpful",
         "instruction": "do write",
@@ -131,6 +153,23 @@ async def test_plan_steps_become_agent_step_tasks_keyed_by_plan_key(patch_client
         "tools": [],
         "step_name": "Step write",
     }
+
+
+async def test_each_run_gets_its_own_workspace_so_concurrent_runs_cant_collide(patch_client):
+    fake = FakeCoworkify(pending_polls=0)
+    fake.add_task_result("write", status="success", output="wrote it")
+    patch_client(fake)
+
+    executor = CoworkifyExecutor("http://coworkify.test", token="test-token", model="scripted:x")
+    plan = Plan(goal="ship it", steps=[step("write")])
+
+    await executor.run(plan)
+    first_workspace = fake.created_body["steps"][0]["payload"]["workspace"]
+
+    await executor.run(plan)
+    second_workspace = fake.created_body["steps"][0]["payload"]["workspace"]
+
+    assert first_workspace != second_workspace
 
 
 async def test_depends_on_and_for_each_pass_through_unchanged(patch_client):
@@ -217,6 +256,43 @@ async def test_an_invalid_plan_is_rejected_before_any_request(patch_client):
         await executor.run(plan)
 
     assert fake.created_body is None
+
+
+# --- cron schedules ---------------------------------------------------------
+
+
+async def test_create_schedule_posts_the_plan_as_a_workflow_template(patch_client):
+    fake = FakeCoworkify()
+    patch_client(fake)
+
+    executor = CoworkifyExecutor("http://coworkify.test", token="test-token", model="scripted:x")
+    plan = Plan(goal="daily digest", steps=[step("write"), step("send", depends_on=["write"])])
+
+    result = await executor.create_schedule(plan, cron_expression="0 9 * * *", name="daily-digest")
+
+    assert result["id"] == "sched-1"
+    assert result["next_run_at"] == "2026-09-11T09:00:00"
+    assert fake.created_schedule_body["name"] == "daily-digest"
+    assert fake.created_schedule_body["cron_expression"] == "0 9 * * *"
+    assert fake.created_schedule_body["enabled"] is True
+    sent_steps = {s["key"]: s for s in fake.created_schedule_body["steps"]}
+    assert sent_steps["send"]["depends_on"] == ["write"]
+    assert sent_steps["write"]["payload"]["workspace"].startswith("/tmp/codoctopus-agent-steps/")
+    # create_schedule never talks to /workflows/ — it only registers the template.
+    assert fake.created_body is None
+
+
+async def test_create_schedule_rejects_an_invalid_plan_before_any_request(patch_client):
+    fake = FakeCoworkify()
+    patch_client(fake)
+
+    executor = CoworkifyExecutor("http://coworkify.test", token="test-token")
+    plan = Plan(goal="loop", steps=[step("a", depends_on=["b"]), step("b", depends_on=["a"])])
+
+    with pytest.raises(Exception, match="circular dependency"):
+        await executor.create_schedule(plan, cron_expression="0 9 * * *", name="bad")
+
+    assert fake.created_schedule_body is None
 
 
 # --- from_settings -----------------------------------------------------

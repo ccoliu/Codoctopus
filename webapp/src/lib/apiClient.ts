@@ -1,4 +1,11 @@
-import type { ProviderCredentials, RunCreateBody, RunDetail, RunSummary } from './types'
+import type {
+  ProviderCredentials,
+  RunCreateBody,
+  RunDetail,
+  RunSummary,
+  ScheduleCreateBody,
+  ScheduleResponse,
+} from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
@@ -24,6 +31,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(creds),
     }),
+  createSchedule: (runId: string, body: ScheduleCreateBody) =>
+    request<ScheduleResponse>(`/runs/${runId}/schedule`, { method: 'POST', body: JSON.stringify(body) }),
 }
 
 export function runStreamUrl(runId: string): string {

@@ -28,3 +28,8 @@ class RunCreate(BaseModel):
 class ModelsRequest(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
+
+
+class ScheduleCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    cron_expression: str = Field(min_length=1, description="standard 5-field cron, e.g. '0 9 * * *'")

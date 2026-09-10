@@ -1,9 +1,108 @@
+import { useMutation } from '@tanstack/react-query'
+import { useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { Card } from '../components/Card'
 import { Spinner } from '../components/Spinner'
 import { StatusBadge } from '../components/StatusBadge'
 import { useRunStream } from '../hooks/useRunStream'
+import { api } from '../lib/apiClient'
 import type { PlanStep, StepRunState } from '../lib/types'
+
+const inputClass =
+  'w-full rounded-lg border border-border bg-plane px-3 py-2 text-sm text-ink outline-none focus:border-accent'
+const labelClass = 'mb-1.5 block text-sm font-medium text-ink-secondary'
+
+/**
+ * Registers a run's already-planned steps as a recurring Coworkify cron
+ * schedule — a one-way "create" action. Editing/disabling/deleting a
+ * schedule afterward stays in Coworkify's own dashboard rather than being
+ * duplicated here.
+ */
+function ScheduleForm({ runId, goal }: { runId: string; goal: string }) {
+  const [open, setOpen] = useState(false)
+  const [name, setName] = useState(goal.slice(0, 60))
+  const [cron, setCron] = useState('0 9 * * *')
+
+  const createSchedule = useMutation({
+    mutationFn: () => api.createSchedule(runId, { name, cron_expression: cron }),
+  })
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="text-sm font-medium text-accent hover:text-accent-strong"
+      >
+        Schedule as cron…
+      </button>
+    )
+  }
+
+  if (createSchedule.isSuccess) {
+    const sched = createSchedule.data
+    return (
+      <Card className="p-4 text-sm">
+        <p className="text-ink">
+          Scheduled <span className="font-medium">{sched.name}</span> ({sched.cron_expression}).
+        </p>
+        {sched.next_run_at && <p className="mt-1 text-ink-secondary">Next run: {sched.next_run_at}</p>}
+        <p className="mt-1 text-ink-secondary">
+          Manage it (edit, disable, delete) from Coworkify&apos;s own Schedules page.
+        </p>
+      </Card>
+    )
+  }
+
+  return (
+    <Card className="p-4">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (name.trim() && cron.trim() && !createSchedule.isPending) createSchedule.mutate()
+        }}
+        className="flex flex-col gap-3"
+      >
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={labelClass}>Name</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} className={inputClass} required />
+          </div>
+          <div>
+            <label className={labelClass}>Cron expression</label>
+            <input
+              value={cron}
+              onChange={(e) => setCron(e.target.value)}
+              placeholder="0 9 * * *"
+              className={`${inputClass} font-mono`}
+              required
+            />
+          </div>
+        </div>
+        {createSchedule.isError && (
+          <p className="text-sm text-status-critical">{(createSchedule.error as Error).message}</p>
+        )}
+        <div className="flex gap-2">
+          <button
+            type="submit"
+            disabled={createSchedule.isPending}
+            className="inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {createSchedule.isPending && <Spinner className="h-4 w-4 text-white" />}
+            Create schedule
+          </button>
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="rounded-lg px-3 py-1.5 text-sm text-ink-secondary hover:text-ink"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    </Card>
+  )
+}
 
 function itemsFor(step: PlanStep, steps: Record<string, StepRunState>): StepRunState[] {
   if (!step.for_each) {
@@ -125,6 +224,9 @@ export function RunDetail() {
           {run.plan.steps.map((step) => (
             <StepCard key={step.key} step={step} steps={steps} />
           ))}
+          <div className="mt-2">
+            <ScheduleForm runId={run.id} goal={run.goal} />
+          </div>
         </div>
       )}
     </div>

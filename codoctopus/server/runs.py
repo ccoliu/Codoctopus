@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+import httpx
+
 from codoctopus.config import Settings
 from codoctopus.domains import get_domain
 from codoctopus.llm import get_provider
@@ -44,6 +46,10 @@ def _provider_kwargs(api_key: str | None, base_url: str | None) -> dict[str, str
 #: Pushed to a subscriber's queue right after "run_done" so its WebSocket
 #: handler knows the run is over and it can close the connection.
 DONE = object()
+
+
+class ScheduleError(Exception):
+    """A schedule request couldn't be fulfilled — reported as a clean 400, not a 500."""
 
 
 @dataclass
@@ -134,6 +140,24 @@ class RunManager:
             )
         )
         return run
+
+    async def create_schedule(self, run_id: str, *, cron_expression: str, name: str) -> dict[str, Any]:
+        """Register `run`'s plan as a recurring Coworkify schedule instead of a one-off run."""
+        run = self._runs.get(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        if run.plan is None:
+            raise ScheduleError("This run has no plan yet — wait for planning to finish first.")
+        if not self._settings.uses_coworkify:
+            raise ScheduleError(
+                "CODOCTOPUS_COWORKIFY_URL is not set — cron schedules run on Coworkify, not locally."
+            )
+
+        executor = CoworkifyExecutor.from_settings(self._settings)
+        try:
+            return await executor.create_schedule(run.plan, cron_expression=cron_expression, name=name)
+        except httpx.HTTPStatusError as exc:
+            raise ScheduleError(f"Coworkify rejected the schedule: {exc.response.text}") from exc
 
     async def subscribe(self, run_id: str) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue()

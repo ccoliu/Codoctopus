@@ -52,6 +52,21 @@ export interface ProviderCredentials {
   base_url?: string
 }
 
+export interface ScheduleCreateBody {
+  name: string
+  cron_expression: string
+}
+
+/** Coworkify's WorkflowScheduleResponse, passed straight through by the server. */
+export interface ScheduleResponse {
+  id: string
+  name: string
+  cron_expression: string
+  enabled: boolean
+  next_run_at: string | null
+  last_run_at: string | null
+}
+
 export type StepRunStatus = 'pending' | 'running' | 'done' | 'failed'
 
 export interface StepRunState {

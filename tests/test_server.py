@@ -10,8 +10,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -19,6 +21,7 @@ from codoctopus.config import get_settings, reset_settings
 from codoctopus.llm import Completion, Provider, StopReason, register_provider
 from codoctopus.planning import Plan
 from codoctopus.server import create_app
+from codoctopus.server.runs import Run, RunManager, ScheduleError
 
 
 class ScriptedProvider(Provider):
@@ -260,6 +263,99 @@ def test_omitted_credentials_are_not_sent_to_the_provider_at_all(client: TestCli
     call = next(c for c in construction_calls if c["model"] == "z")
     assert "api_key" not in call
     assert "base_url" not in call
+
+
+def _fake_coworkify_schedule_transport(captured: dict):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/schedules/"
+        body = json.loads(request.content)
+        captured["body"] = body
+        return httpx.Response(
+            201,
+            json={
+                "id": "sched-1",
+                "name": body["name"],
+                "cron_expression": body["cron_expression"],
+                "steps": body["steps"],
+                "enabled": body["enabled"],
+                "last_run_at": None,
+                "next_run_at": "2026-09-11T09:00:00",
+                "created_at": "2026-09-10T00:00:00",
+                "updated_at": "2026-09-10T00:00:00",
+            },
+        )
+
+    return httpx.MockTransport(handler)
+
+
+def test_create_schedule_registers_the_runs_plan_as_a_coworkify_cron(monkeypatch):
+    # manager captures Settings by reference at create_app() time, so
+    # coworkify must be configured *before* building the app — reusing the
+    # shared `client` fixture here would reconfigure too late to matter.
+    monkeypatch.setenv("CODOCTOPUS_COWORKIFY_URL", "http://coworkify.test")
+    monkeypatch.setenv("CODOCTOPUS_COWORKIFY_TOKEN", "test-token")
+    reset_settings()
+
+    captured: dict = {}
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "codoctopus.runtime.coworkify.httpx.AsyncClient",
+        lambda **kw: real_async_client(transport=_fake_coworkify_schedule_transport(captured), **kw),
+    )
+
+    with TestClient(create_app()) as client:
+        # The run itself stays on the default local executor — scheduling
+        # only needs its finished Plan, regardless of how it first ran.
+        created = client.post("/api/runs", json={"goal": "daily digest", "model": "scripted:x"}).json()
+        _collect_stream(client, created["id"])  # wait for planning to finish
+
+        resp = client.post(
+            f"/api/runs/{created['id']}/schedule", json={"name": "daily-digest", "cron_expression": "0 9 * * *"}
+        )
+
+    assert resp.status_code == 201
+    assert resp.json()["next_run_at"] == "2026-09-11T09:00:00"
+    assert captured["body"]["name"] == "daily-digest"
+    assert captured["body"]["cron_expression"] == "0 9 * * *"
+    assert captured["body"]["steps"][0]["key"] == "write"
+
+
+def test_create_schedule_without_coworkify_configured_is_a_clean_400(client: TestClient, monkeypatch):
+    monkeypatch.delenv("CODOCTOPUS_COWORKIFY_URL", raising=False)
+    reset_settings()
+
+    created = client.post("/api/runs", json={"goal": "daily digest", "model": "scripted:x"}).json()
+    _collect_stream(client, created["id"])
+
+    resp = client.post(
+        f"/api/runs/{created['id']}/schedule", json={"name": "daily-digest", "cron_expression": "0 9 * * *"}
+    )
+
+    assert resp.status_code == 400
+    assert "CODOCTOPUS_COWORKIFY_URL" in resp.json()["detail"]
+
+
+async def test_create_schedule_before_planning_finished_is_a_clean_400(monkeypatch):
+    # Racing a real run to catch it mid-planning is flaky (the scripted
+    # provider often finishes before the next request lands) — a run with no
+    # plan set is exercised directly against RunManager instead.
+    monkeypatch.setenv("CODOCTOPUS_COWORKIFY_URL", "http://coworkify.test")
+    monkeypatch.setenv("CODOCTOPUS_COWORKIFY_TOKEN", "test-token")
+    reset_settings()
+
+    manager = RunManager(get_settings())
+    run = Run(id="r1", goal="daily digest", domain=None, executor="local")
+    manager._runs["r1"] = run
+
+    with pytest.raises(ScheduleError, match="no plan yet"):
+        await manager.create_schedule("r1", cron_expression="0 9 * * *", name="daily-digest")
+
+
+def test_create_schedule_for_an_unknown_run_is_404(client: TestClient):
+    resp = client.post(
+        "/api/runs/does-not-exist/schedule", json={"name": "x", "cron_expression": "0 9 * * *"}
+    )
+    assert resp.status_code == 404
 
 
 def test_a_planning_failure_reports_run_done_failed(client: TestClient):

@@ -17,8 +17,8 @@ from codoctopus.config import get_settings
 from codoctopus.domains import available_domains
 from codoctopus.llm import ProviderError, available_providers
 from codoctopus.llm import list_models as llm_list_models
-from codoctopus.server.runs import DONE, RunManager
-from codoctopus.server.schemas import ModelsRequest, RunCreate
+from codoctopus.server.runs import DONE, RunManager, ScheduleError
+from codoctopus.server.schemas import ModelsRequest, RunCreate, ScheduleCreate
 
 
 def create_app() -> FastAPI:
@@ -82,6 +82,15 @@ def create_app() -> FastAPI:
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
         return run.to_detail()
+
+    @app.post("/api/runs/{run_id}/schedule", status_code=201)
+    async def create_run_schedule(run_id: str, body: ScheduleCreate) -> dict:
+        if manager.get(run_id) is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        try:
+            return await manager.create_schedule(run_id, cron_expression=body.cron_expression, name=body.name)
+        except ScheduleError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.websocket("/api/runs/{run_id}/stream")
     async def stream_run(websocket: WebSocket, run_id: str) -> None:
