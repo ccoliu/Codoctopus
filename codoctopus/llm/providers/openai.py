@@ -133,6 +133,12 @@ class OpenAIProvider(Provider):
         response = await self._client.chat.completions.create(**params)
         choice = response.choices[0]
         text = choice.message.content or ""
+        # LM Studio 等 OpenAI 相容 server 跑推理模型（qwen3.x 等）時，structured output
+        # 的 JSON 可能整段落在 reasoning_content、content 反而是空的。只在要求了
+        # output_schema 時才退回去讀它——一般對話的 reasoning_content 是思考過程，不是答案。
+        if not text and output_schema is not None:
+            extra = choice.message.model_extra or {}
+            text = (getattr(choice.message, "reasoning_content", None) or extra.get("reasoning_content") or "").strip()
 
         tool_calls = [
             ToolCall(id=c.id, name=c.function.name, arguments=json.loads(c.function.arguments or "{}"))
