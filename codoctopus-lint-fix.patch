@@ -1,0 +1,87 @@
+diff --git a/codoctopus/agents/agent.py b/codoctopus/agents/agent.py
+index ac9919f..24de721 100644
+--- a/codoctopus/agents/agent.py
++++ b/codoctopus/agents/agent.py
+@@ -22,7 +22,6 @@ from pydantic import BaseModel
+ 
+ from codoctopus.llm.base import DEFAULT_MAX_TOKENS, Provider
+ from codoctopus.llm.types import (
+-    Completion,
+     Message,
+     StopReason,
+     ToolCall,
+diff --git a/codoctopus/tools/shell.py b/codoctopus/tools/shell.py
+index 5cd68c0..9daf30e 100644
+--- a/codoctopus/tools/shell.py
++++ b/codoctopus/tools/shell.py
+@@ -1,7 +1,6 @@
+ from __future__ import annotations
+ 
+ import asyncio
+-from pathlib import Path
+ import shlex
+ from pydantic import BaseModel, Field
+ 
+@@ -58,11 +57,11 @@ class ShellTool(Tool):
+         for arg in args_list:
+             if "://" in arg: #Allow URL
+                 try:
+-                    target_url = _validate_public_url(arg)
++                    _validate_public_url(arg)
+                 except ValueError:
+                     raise ValueError(f"Invalid URL: {arg}")
+             try:
+-                target_path = resolve_in_workspace(workspace, arg)
++                resolve_in_workspace(workspace, arg)
+             except ValueError:
+                 raise ValueError(f"Path traversal attempt detected: {arg}")
+ 
+diff --git a/pyproject.toml b/pyproject.toml
+index 77b4d1b..0e445c9 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -57,3 +57,6 @@ target-version = "py311"
+ [tool.pytest.ini_options]
+ asyncio_mode = "auto"
+ testpaths = ["tests"]
++
++[tool.ruff.lint]
++select = ["E4", "E7", "E9", "F"]
+diff --git a/tests/test_cli.py b/tests/test_cli.py
+index 3db8e66..d60e730 100644
+--- a/tests/test_cli.py
++++ b/tests/test_cli.py
+@@ -14,7 +14,7 @@ from typing import Any
+ import pytest
+ 
+ from codoctopus.cli import build_parser, main
+-from codoctopus.llm import Completion, Provider, StopReason, ToolCall, register_provider
++from codoctopus.llm import Completion, Provider, StopReason, register_provider
+ from codoctopus.planning import Plan
+ 
+ 
+diff --git a/tests/test_llm_layer.py b/tests/test_llm_layer.py
+index bc52782..67e785e 100644
+--- a/tests/test_llm_layer.py
++++ b/tests/test_llm_layer.py
+@@ -20,7 +20,6 @@ from codoctopus.llm import (
+     StructuredOutputError,
+     ToolCall,
+     ToolResult,
+-    ToolSpec,
+     available_providers,
+     get_provider,
+     list_models,
+diff --git a/tests/test_runtime_local.py b/tests/test_runtime_local.py
+index 8a233f2..eb74111 100644
+--- a/tests/test_runtime_local.py
++++ b/tests/test_runtime_local.py
+@@ -8,7 +8,7 @@ import pytest
+ 
+ from codoctopus.llm import Completion, Provider
+ from codoctopus.planning.models import Plan, PlanStep
+-from codoctopus.runtime import LocalExecutor, PlanResult
++from codoctopus.runtime import LocalExecutor
+ 
+ 
+ class ScriptedProvider(Provider):

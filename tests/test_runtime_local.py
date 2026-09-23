@@ -8,7 +8,7 @@ import pytest
 
 from codoctopus.llm import Completion, Provider
 from codoctopus.planning.models import Plan, PlanStep
-from codoctopus.runtime import LocalExecutor, PlanResult
+from codoctopus.runtime import LocalExecutor
 
 
 class ScriptedProvider(Provider):

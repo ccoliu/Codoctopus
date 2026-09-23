@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 import shlex
 from pydantic import BaseModel, Field
 
@@ -58,11 +57,11 @@ class ShellTool(Tool):
         for arg in args_list:
             if "://" in arg: #Allow URL
                 try:
-                    target_url = _validate_public_url(arg)
+                    _validate_public_url(arg)
                 except ValueError:
                     raise ValueError(f"Invalid URL: {arg}")
             try:
-                target_path = resolve_in_workspace(workspace, arg)
+                resolve_in_workspace(workspace, arg)
             except ValueError:
                 raise ValueError(f"Path traversal attempt detected: {arg}")
 

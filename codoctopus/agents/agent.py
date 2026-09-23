@@ -22,7 +22,6 @@ from pydantic import BaseModel
 
 from codoctopus.llm.base import DEFAULT_MAX_TOKENS, Provider
 from codoctopus.llm.types import (
-    Completion,
     Message,
     StopReason,
     ToolCall,

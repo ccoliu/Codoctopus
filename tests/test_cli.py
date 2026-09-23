@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from codoctopus.cli import build_parser, main
-from codoctopus.llm import Completion, Provider, StopReason, ToolCall, register_provider
+from codoctopus.llm import Completion, Provider, StopReason, register_provider
 from codoctopus.planning import Plan
 
 

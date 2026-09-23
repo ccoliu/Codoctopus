@@ -20,7 +20,6 @@ from codoctopus.llm import (
     StructuredOutputError,
     ToolCall,
     ToolResult,
-    ToolSpec,
     available_providers,
     get_provider,
     list_models,
