@@ -159,10 +159,9 @@ pytest -q
 
 ## Legacy v1
 
-`backend/`, `frontend/`, `run.py`, `gunicorn.conf.py`, `render.yaml`, `requirements.txt`
-and `.env.example` belong to the old v1 Flask app (Gemini-based code analysis, generation
-and plagiarism checking, backed by MongoDB). They are superseded by the `codoctopus`
-package above and kept only for reference.
+The old v1 Flask app (Gemini-based code analysis, generation and plagiarism checking,
+backed by MongoDB) is superseded by the `codoctopus` package above. Its code lives on
+the [`legacy-v1`](https://github.com/ccoliu/Codoctopus/tree/legacy-v1) branch.
 
 ## License
 

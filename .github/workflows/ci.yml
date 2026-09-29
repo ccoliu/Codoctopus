@@ -1,5 +1,3 @@
-# Place at: Codoctopus/.github/workflows/ci.yml
-# Requires the ruff rule pin in pyproject.toml (see codoctopus-lint-fix.patch).
 name: CI
 
 on:
