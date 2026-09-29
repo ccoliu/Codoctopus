@@ -1,14 +1,60 @@
 # Codoctopus 🐙
 
-AI-powered code analysis, generation, and plagiarism-checking platform.
+A provider-neutral agent orchestration framework: give it a goal, and it decomposes the
+goal into a verified task DAG, then runs each step with agents that can actually act —
+read and write files, run shell commands and tests, and make HTTP requests.
 
-## GUI — Local Development
+- **Provider-neutral** — Anthropic, OpenAI, Gemini, Ollama, or any OpenAI-compatible
+  gateway (LM Studio, vLLM, ...). Switching models is a config change, not a code change.
+- **Structured protocol** — steps pass typed objects (Pydantic), not prose to be parsed.
+- **Agents with tools** — verification means the code was really run, not re-read by an LLM.
+- **Pluggable domains** — `coding` and `research` ship built in.
+- **Zero infrastructure by default** — plans run in-process on asyncio; optionally hand
+  them to [Coworkify](https://github.com/ccoliu/coworkify) for retries and persistence.
 
-The v2 GUI is two processes: a FastAPI backend (`codoctopus serve`) and a Vite dev
-server (`webapp/`) that proxies `/api/*` to it. Both need to be running.
+See [`docs/ARCHITECTURE_V2.md`](docs/ARCHITECTURE_V2.md) for the full design.
+
+## Install
+
+Requires Python 3.11+.
 
 ```bash
-# Terminal 1 — backend (needs the `server` extra: pip install -e ".[server]")
+pip install -e ".[all]"          # core + every provider SDK
+pip install -e ".[anthropic]"    # or just the providers you need: anthropic / openai / gemini
+pip install -e ".[server]"       # adds FastAPI + uvicorn for the GUI backend
+pip install -e ".[dev,all]"      # for development (pytest, ruff)
+```
+
+## CLI
+
+```bash
+# Plan and execute a goal
+codoctopus run "Write a CLI that converts CSV to JSON, with tests" --domain coding
+
+# Only show the plan
+codoctopus run "Survey Python async HTTP clients" --domain research --dry-run
+
+# Pick models per role (provider:model)
+codoctopus run "..." --model anthropic:claude-opus-5 --worker-model ollama:llama3.1
+```
+
+| Option | Description |
+|---|---|
+| `--domain` | Domain pack to plan within (`coding`, `research`) |
+| `--model` | `provider:model` used for planning |
+| `--worker-model` | `provider:model` used to run each step |
+| `--workspace` | Directory the agent tools may read and write in |
+| `--executor` | `local` (default) or `coworkify` |
+| `--dry-run` | Plan only, don't execute |
+| `--json` | Machine-readable output |
+
+## GUI
+
+The GUI is two processes: a FastAPI backend (`codoctopus serve`) and a Vite dev server
+(`webapp/`) that proxies `/api/*` to it. Both need to be running.
+
+```bash
+# Terminal 1 — backend (needs the `server` extra)
 codoctopus serve --port 8420
 
 # Terminal 2 — frontend
@@ -22,103 +68,102 @@ isn't running (or died) — start it in Terminal 1 and refresh. Provider API key
 entered in the GUI's own Settings page (saved to the browser's `localStorage`, sent
 only with the runs you start) — no `.env` needed on the backend for that.
 
-See `codoctopus/server/` (backend) and `webapp/` (frontend) for the implementation.
-The rest of this README predates the v2 rewrite and describes the old v1 Flask
-backend under `backend/`, which the current `codoctopus` package has replaced.
+## Python SDK
 
-## Architecture
+```python
+import asyncio
+from pathlib import Path
+
+from codoctopus.domains import get_domain
+from codoctopus.llm import get_provider
+from codoctopus.planning import make_plan
+from codoctopus.runtime import LocalExecutor
+from codoctopus.tools.builtin import BUILTIN_TOOLS, build_tool_registry
+
+
+async def main() -> None:
+    plan = await make_plan(
+        get_provider("anthropic:claude-opus-5"),
+        "Write a function that parses ISO dates, with tests",
+        domain=get_domain("coding"),
+        available_tools=list(BUILTIN_TOOLS),
+    )
+    workspace = Path(".codoctopus/workspace")
+    workspace.mkdir(parents=True, exist_ok=True)
+    executor = LocalExecutor(
+        get_provider("anthropic:claude-sonnet-5"),
+        workspace=workspace,
+        tools=build_tool_registry(workspace),
+    )
+    result = await executor.run(plan)
+    print(result.status, result.step_results)
+
+
+asyncio.run(main())
+```
+
+## Providers
+
+Models are referenced as `provider:model`; a bare provider name uses its default model.
+
+| Provider | Example | Credentials |
+|---|---|---|
+| `anthropic` | `anthropic:claude-opus-5` | `ANTHROPIC_API_KEY` |
+| `openai` | `openai:gpt-4.1` | `OPENAI_API_KEY` |
+| `gemini` | `gemini:gemini-2.0-flash` | `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
+| `ollama` | `ollama:llama3.1` | none (local) |
+| `gateway` | `gateway:<model>` | OpenAI-compatible server; requires `base_url` |
+
+Custom providers can be added with `codoctopus.llm.registry.register_provider`.
+
+## Configuration
+
+All settings come from environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `CODOCTOPUS_PLANNER_MODEL` | `anthropic:claude-opus-5` | Model used for planning |
+| `CODOCTOPUS_WORKER_MODEL` | `anthropic:claude-sonnet-5` | Model used for each step |
+| `CODOCTOPUS_EFFORT` | `high` | Reasoning effort |
+| `CODOCTOPUS_MAX_TOKENS` | `16000` | Max output tokens per call |
+| `CODOCTOPUS_WORKSPACE` | `.codoctopus/workspace` | Agents may only read/write below this directory |
+| `CODOCTOPUS_MAX_TOOL_TURNS` | `25` | Tool-use iteration cap per agent step |
+| `CODOCTOPUS_COWORKIFY_URL` | *(unset)* | Coworkify base URL; unset means run locally |
+| `CODOCTOPUS_COWORKIFY_TOKEN` | *(unset)* | Coworkify auth token |
+
+## Project Layout
 
 ```
-Codoctopus/
-├── backend/                  # Flask application
-│   ├── __init__.py           # App factory (create_app)
-│   ├── config.py             # Configuration loader
-│   ├── extensions.py         # Shared singletons (GenAI, MongoDB)
-│   ├── blueprints/
-│   │   ├── rest.py           # /api/rest/*   — code analysis
-│   │   ├── generate.py       # /api/generate/* — code generation
-│   │   └── auth.py           # /api/auth/*   — authentication
-│   ├── services/
-│   │   ├── ai_service.py     # Google Gemini API calls
-│   │   ├── db_utility.py     # MongoDB + Auth helpers
-│   │   ├── format_enforcer.py
-│   │   └── plagiarism_checker.py
-│   └── config_data/          # YAML config files
-├── frontend/                 # Static assets served by Flask
-│   ├── index.html
-│   ├── pages/
-│   ├── scripts/
-│   ├── styles/               # Modern Glassmorphism CSS
-│   └── icons/
-├── run.py                    # Entrypoint
-├── gunicorn.conf.py          # Gunicorn settings
-├── render.yaml               # Render IaC blueprint
-├── requirements.txt
-└── .env.example              # Environment variable template
+codoctopus/
+├── cli.py          # `codoctopus run` / `codoctopus serve`
+├── config.py       # Settings from environment variables
+├── planning/       # goal → Plan (DAG) + validation
+├── agents/         # Agent tool-use loop
+├── domains/        # Domain packs: coding, research
+├── tools/          # filesystem, shell, testing, http
+├── llm/            # Provider interface + anthropic / openai / gemini / ollama
+├── runtime/        # LocalExecutor (asyncio), CoworkifyExecutor
+└── server/         # FastAPI backend for the GUI (HTTP + WebSocket)
+webapp/             # React + Vite frontend
+tests/              # pytest suite (providers use scripted fakes; no API keys needed)
+docs/               # Architecture docs
 ```
 
-## Local Development
+## Development
 
 ```bash
-# 1. Clone the repo
-git clone https://github.com/your-org/Codoctopus.git
-cd Codoctopus
-
-# 2. Create a virtual environment
-python -m venv venv
-venv\Scripts\activate        # Windows
-# source venv/bin/activate   # macOS / Linux
-
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# 4. Set up environment variables
-copy .env.example .env
-# Edit .env with your real API keys (GEMINI_API_KEY, MONGODB_URI)
-
-# 5. Start the dev server
-python run.py
+pip install -e ".[dev,all]"
+ruff check codoctopus tests
+pytest -q
 ```
 
-## Step-by-Step Deploy to Render
+## Legacy v1
 
-1.  **Preparation**:
-    -   Ensure your code is pushed to a GitHub repository.
-    -   Make sure `render.yaml` acts as the blueprint for your deployment.
+`backend/`, `frontend/`, `run.py`, `gunicorn.conf.py`, `render.yaml`, `requirements.txt`
+and `.env.example` belong to the old v1 Flask app (Gemini-based code analysis, generation
+and plagiarism checking, backed by MongoDB). They are superseded by the `codoctopus`
+package above and kept only for reference.
 
-2.  **Create Render Account**:
-    -   Go to [render.com](https://render.com) and sign up/login.
+## License
 
-3.  **New Blueprint**:
-    -   Click the **New+** button and select **Blueprint**.
-    -   Connect your GitHub repository.
-    -   Render will automatically detect the `render.yaml` file.
-
-4.  **Service Configuration**:
-    -   Service Name: `codoctopus-backend` (or your choice).
-    -   Region: Select the closest region (e.g., Singapore, Oregon).
-    -   Branch: `main` (or your working branch).
-
-5.  **Environment Variables**:
-    -   You will be prompted to enter the values for the following keys defined in `render.yaml`:
-        -   `GEMINI_API_KEY`: Your Google Gemini API Key.
-        -   `MONGODB_URI`: Your MongoDB Atlas connection string.
-        -   `JWT_SECRET`: (Auto-generated by Render if sync=false, or paste your own).
-        -   `RSA_PRIVATE_KEY`: Paste the full content of your private key (including BEGIN/END headers).
-        -   `RSA_PUBLIC_KEY`: Paste the full content of your public key.
-
-6.  **Deploy**:
-    -   Click **Apply**. Render will start building and deploying your service.
-    -   Wait for the build to finish. Once valid, you will see a green "Live" badge.
-    -   Your URL will be `https://codoctopus-backend.onrender.com`.
-
-## Environment Variables
-
-| Variable | Description |
-|---|---|
-| `GEMINI_API_KEY` | Google Gemini API Key |
-| `MONGODB_URI` | MongoDB Atlas connection string |
-| `JWT_SECRET` | Secret for signing JWT tokens |
-| `JWT_EXPIRY_HOURS` | Token lifetime (default `0.5` = 30 min) |
-| `RSA_PRIVATE_KEY` | PEM private key for password encryption |
-| `RSA_PUBLIC_KEY` | PEM public key for password encryption |
+MIT
