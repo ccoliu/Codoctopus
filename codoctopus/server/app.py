@@ -4,8 +4,9 @@
 # Thin HTTP/WebSocket wrapper around the same public API the CLI uses
 # (codoctopus.planning.make_plan + codoctopus.runtime executors) so a browser
 # can submit a goal and watch it plan and run instead of reading stdout.
-# No auth, no persistence beyond the process's lifetime — a local dev tool
-# for one user watching their own runs, same trust boundary as the CLI.
+# No auth — a local dev tool for one user watching their own runs, same
+# trust boundary as the CLI. Run history is kept in a local SQLite file
+# (see server/store.py); provider credentials never are.
 # ---------------------------------------------------
 
 from __future__ import annotations

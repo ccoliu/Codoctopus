@@ -79,6 +79,7 @@ def _register_scripted(tmp_path, monkeypatch):
     register_provider("scripted", _make_scripted, list_models=_scripted_list_models)
     register_provider("broken-planner", lambda model=None, **kw: BrokenPlannerProvider(model, **kw))
     monkeypatch.setenv("CODOCTOPUS_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("CODOCTOPUS_RUNS_DB", str(tmp_path / "runs.db"))
     reset_settings()
     yield
     reset_settings()
@@ -356,6 +357,65 @@ def test_create_schedule_for_an_unknown_run_is_404(client: TestClient):
         "/api/runs/does-not-exist/schedule", json={"name": "x", "cron_expression": "0 9 * * *"}
     )
     assert resp.status_code == 404
+
+
+def test_run_history_survives_a_server_restart(client: TestClient):
+    created = client.post(
+        "/api/runs", json={"goal": "ship it", "model": "scripted:x", "worker_model": "scripted:x"}
+    ).json()
+    _collect_stream(client, created["id"])
+
+    # A second app on the same runs DB stands in for a restarted server.
+    with TestClient(create_app()) as restarted:
+        listed = restarted.get("/api/runs").json()["runs"]
+        assert [r["id"] for r in listed] == [created["id"]]
+
+        detail = restarted.get(f"/api/runs/{created['id']}").json()
+        assert detail["status"] == "success"
+        assert detail["step_results"]["write"] == "step done"
+        assert detail["plan"]["goal"] == "ship it"
+        assert detail["workspace"]
+
+        # Its event log comes back too, so the stream replays the per-step history.
+        with restarted.websocket_connect(f"/api/runs/{created['id']}/stream") as ws:
+            kinds = [ws.receive_json()["event"] for _ in range(5)]
+        assert kinds == ["snapshot", "plan_ready", "step_started", "step_done", "run_done"]
+
+
+def test_provider_credentials_are_never_written_to_the_runs_db(client: TestClient):
+    created = client.post(
+        "/api/runs",
+        json={
+            "goal": "ship it",
+            "model": "scripted:x",
+            "worker_model": "scripted:y",
+            "planner_api_key": "planner-secret",
+            "worker_api_key": "worker-secret",
+        },
+    ).json()
+    _collect_stream(client, created["id"])
+
+    db_bytes = get_settings().runs_db.read_bytes()
+    assert b"planner-secret" not in db_bytes
+    assert b"worker-secret" not in db_bytes
+
+
+def test_a_run_cut_off_by_a_restart_is_marked_failed_on_load():
+    manager = RunManager(get_settings())
+    run = Run(id="r1", goal="ship it", domain=None, executor="local", status="running")
+    manager._runs["r1"] = run
+    manager._events["r1"] = []
+    manager._store.save_run(run.to_detail())
+    manager._record(run, {"event": "step_started", "data": {"key": "write"}})
+
+    reloaded = RunManager(get_settings()).get("r1")
+
+    assert reloaded.status == "failed"
+    assert "Interrupted" in reloaded.error
+    restarted = RunManager(get_settings())
+    events = [(e["event"], e["data"].get("key")) for e in restarted.history("r1")]
+    # The step that was mid-flight gets closed out rather than spinning forever.
+    assert events == [("step_started", "write"), ("step_failed", "write"), ("run_done", None)]
 
 
 def test_a_planning_failure_reports_run_done_failed(client: TestClient):

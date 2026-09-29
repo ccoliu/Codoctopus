@@ -43,6 +43,9 @@ class Settings:
     #: Agents may only read and write below this directory.
     workspace: Path = field(default_factory=lambda: Path(_env("CODOCTOPUS_WORKSPACE", ".codoctopus/workspace")))
 
+    #: SQLite file the GUI server keeps its run history in, so it survives a restart.
+    runs_db: Path = field(default_factory=lambda: Path(_env("CODOCTOPUS_RUNS_DB", ".codoctopus/runs.db")))
+
     #: Ceiling on tool-use iterations in one agent step, so a loop cannot run away.
     max_tool_turns: int = field(default_factory=lambda: _env_int("CODOCTOPUS_MAX_TOOL_TURNS", 25))
 

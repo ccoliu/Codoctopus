@@ -4,8 +4,9 @@
 # A Run wraps one make_plan + Executor.run() call with everything a browser
 # needs to watch it happen: a status a poller can read, and a per-run event
 # log that both a freshly-connecting WebSocket (as a snapshot) and a live one
-# (as they're appended) can consume. Kept in memory — this is a local dev
-# tool for one user watching their own runs, not a durable job queue.
+# (as they're appended) can consume. Served from memory, written through to
+# a RunStore (SQLite) so the history survives a server restart — though a run
+# still executing when the server stops can't resume, only be marked failed.
 # ---------------------------------------------------
 
 from __future__ import annotations
@@ -24,9 +25,12 @@ from codoctopus.domains import get_domain
 from codoctopus.llm import get_provider
 from codoctopus.planning import Plan, make_plan
 from codoctopus.runtime import CoworkifyExecutor, LocalExecutor
+from codoctopus.server.store import RunStore
 from codoctopus.tools.builtin import BUILTIN_TOOLS, build_tool_registry
 
 RunStatus = Literal["planning", "running", "success", "failed"]
+
+_INTERRUPTED = "Interrupted: the server stopped before this run finished."
 
 
 def _provider_kwargs(api_key: str | None, base_url: str | None) -> dict[str, str]:
@@ -90,6 +94,11 @@ class Run:
             "workspace": self.workspace,
         }
 
+    @classmethod
+    def from_detail(cls, detail: dict[str, Any]) -> Run:
+        plan = detail.get("plan")
+        return cls(**{**detail, "plan": Plan.model_validate(plan) if plan else None})
+
 
 class RunManager:
     """Creates Runs, executes them in the background, and fans out their events."""
@@ -99,6 +108,45 @@ class RunManager:
         self._runs: dict[str, Run] = {}
         self._events: dict[str, list[dict[str, Any]]] = {}
         self._subscribers: dict[str, list[asyncio.Queue]] = {}
+        self._store = RunStore(settings.runs_db)
+        self._load()
+
+    def _load(self) -> None:
+        for detail, events in self._store.load():
+            run = Run.from_detail(detail)
+            self._runs[run.id] = run
+            self._events[run.id] = events
+            if run.status in ("planning", "running"):
+                self._mark_interrupted(run)
+
+    def _mark_interrupted(self, run: Run) -> None:
+        """
+        A run whose task died with the previous server process — it can't be
+        resumed, so close it out as failed. Steps it had started but never
+        finished get a step_failed too, or the GUI would spin on them forever.
+        """
+        started: dict[str, None] = {}
+        for entry in self._events[run.id]:
+            key = entry["data"].get("key")
+            if entry["event"] == "step_started":
+                started[key] = None
+            elif entry["event"] in ("step_done", "step_failed"):
+                started.pop(key, None)
+
+        for key in started:
+            self._record(run, {"event": "step_failed", "data": {"key": key, "error": _INTERRUPTED}})
+        run.status = "failed"
+        run.error = _INTERRUPTED
+        self._record(
+            run, {"event": "run_done", "data": {"status": "failed", "step_results": run.step_results, "error": _INTERRUPTED}}
+        )
+
+    def _record(self, run: Run, entry: dict[str, Any]) -> None:
+        """Append an event and persist it together with the run's current state."""
+        events = self._events[run.id]
+        events.append(entry)
+        self._store.append_event(run.id, len(events) - 1, entry)
+        self._store.save_run(run.to_detail())
 
     def get(self, run_id: str) -> Run | None:
         return self._runs.get(run_id)
@@ -126,6 +174,7 @@ class RunManager:
         run = Run(id=str(uuid.uuid4()), goal=goal, domain=domain, executor=executor)
         self._runs[run.id] = run
         self._events[run.id] = []
+        self._store.save_run(run.to_detail())
         asyncio.create_task(
             self._execute(
                 run.id,
@@ -171,7 +220,7 @@ class RunManager:
 
     async def _broadcast(self, run_id: str, event: str, data: dict[str, Any]) -> None:
         entry = {"event": event, "data": data}
-        self._events[run_id].append(entry)
+        self._record(self._runs[run_id], entry)
         for queue in list(self._subscribers.get(run_id, [])):
             await queue.put(entry)
         if event == "run_done":
