@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import json
 from pathlib import Path
 from typing import Any, Callable
 
 from codoctopus.agents import Agent
 from codoctopus.llm import Provider
+from codoctopus.llm.base import _extract_json
 from codoctopus.planning.models import Plan, PlanStep
 from codoctopus.planning.validate import validate_plan
 from codoctopus.runtime.base import Executor, PlanResult
@@ -39,11 +39,12 @@ def _parse_list_output(raw: str) -> list[Any]:
     if not raw:
         return []
     try:
-        data = json.loads(raw)
+        data = _extract_json(raw)
+    except ValueError:
+        pass
+    else:
         if isinstance(data, list):
             return data
-    except Exception:
-        pass
     # Fallback to lines
     return [line.strip() for line in raw.splitlines() if line.strip()]
 

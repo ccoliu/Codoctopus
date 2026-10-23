@@ -117,6 +117,70 @@ async def test_for_each_dynamic_expansion(workspace: Path):
     assert result.step_results["consumer[1]"] == "banana processed"
 
 
+@pytest.mark.parametrize(
+    ("source_output", "instruction", "expected_items"),
+    [
+        (
+            '```json\n["a.py", "b.py"]\n```',
+            "process item: {{item}}",
+            ["a.py", "b.py"],
+        ),
+        (
+            'Files:\n["a.py", "b.py"]',
+            "process item: {{item}}",
+            ["a.py", "b.py"],
+        ),
+        (
+            "a.py\nb.py",
+            "process item: {{item}}",
+            ["a.py", "b.py"],
+        ),
+        (
+            '```json\n[{"path": "a.py"}, {"path": "b.py"}]\n```',
+            "process item: {{item.path}}",
+            ["a.py", "b.py"],
+        ),
+    ],
+)
+@pytest.mark.anyio
+async def test_for_each_accepts_tolerant_json_lists(
+    workspace: Path,
+    source_output: str,
+    instruction: str,
+    expected_items: list[str],
+):
+    provider = ScriptedProvider(
+        responses={
+            "list items": source_output,
+            **{f"process item: {item}": f"done: {item}" for item in expected_items},
+        }
+    )
+    plan = Plan(
+        goal="run for_each steps",
+        steps=[
+            PlanStep(key="producer", name="Producer", role="rp", instruction="list items"),
+            PlanStep(
+                key="consumer",
+                name="Consumer",
+                role="rc",
+                instruction=instruction,
+                for_each="producer",
+            ),
+        ],
+    )
+
+    result = await LocalExecutor(provider, workspace=workspace).run(plan)
+
+    assert result.status == "success"
+    assert {result.step_results[f"consumer[{index}]"] for index in range(len(expected_items))} == {
+        f"done: {item}" for item in expected_items
+    }
+    assert {call["task"] for call in provider.calls} == {
+        "list items",
+        *(f"process item: {item}" for item in expected_items),
+    }
+
+
 @pytest.mark.anyio
 async def test_step_failure_stops_execution(workspace: Path):
     class FailingProvider(Provider):
