@@ -43,10 +43,15 @@ codoctopus run "..." --model anthropic:claude-opus-5 --worker-model ollama:llama
 | `--domain` | Domain pack to plan within (`coding`, `research`) |
 | `--model` | `provider:model` used for planning |
 | `--worker-model` | `provider:model` used to run each step |
-| `--workspace` | Directory the agent tools may read and write in |
+| `--workspace` | Directory the agent tools may read and write in (default: a fresh folder under `.codoctopus/workspace/` per run) |
 | `--executor` | `local` (default) or `coworkify` |
 | `--dry-run` | Plan only, don't execute |
 | `--json` | Machine-readable output |
+
+With `--domain`, once every step succeeds the domain checks the result — `coding` runs the
+workspace's pytest suite, `research` checks a report was written. The outcome is reported as
+`Verification: PASSED / FAILED / SKIPPED` (skipped when there's nothing to check, e.g. no tests,
+or the files are on a Coworkify worker). The exit code is 1 if a step failed or verification failed.
 
 ## GUI
 

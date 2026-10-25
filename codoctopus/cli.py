@@ -15,11 +15,12 @@ import argparse
 import asyncio
 import json
 import sys
+import uuid
 from pathlib import Path
 
 from codoctopus import __version__
 from codoctopus.config import get_settings
-from codoctopus.domains import get_domain
+from codoctopus.domains import VerifyResult, get_domain, verify_plan_result
 from codoctopus.llm import ProviderError, get_provider
 from codoctopus.planning import Plan, PlanningError, make_plan
 from codoctopus.planning.validate import PlanValidationError
@@ -41,19 +42,33 @@ def _print_plan(plan: Plan) -> None:
         print(f"      {step.instruction}")
 
 
-def _print_result(result: PlanResult) -> None:
+def _print_result(result: PlanResult, verification: VerifyResult | None, workspace: Path | None) -> None:
     print(f"\nStatus: {result.status}")
     if result.error:
         print(f"Error: {result.error}")
     for key, text in result.step_results.items():
         print(f"\n--- {key} ---")
         print(text)
+    if verification is not None:
+        print(f"\nVerification: {verification.status.upper()}")
+        if verification.detail:
+            print(verification.detail)
+    if workspace is not None:
+        print(f"\nWorkspace: {workspace}")
 
 
-def _result_to_json(plan: Plan, result: PlanResult | None) -> str:
+def _result_to_json(
+    plan: Plan, result: PlanResult | None, verification: VerifyResult | None = None, workspace: Path | None = None
+) -> str:
     payload: dict = {"plan": plan.model_dump()}
     if result is not None:
-        payload.update(status=result.status, step_results=result.step_results, error=result.error)
+        payload.update(
+            status=result.status,
+            step_results=result.step_results,
+            error=result.error,
+            verification=verification.to_dict() if verification else None,
+            workspace=str(workspace) if workspace else None,
+        )
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
@@ -74,23 +89,32 @@ async def _run(args: argparse.Namespace) -> int:
             print(_result_to_json(plan, None))
         return 0
 
-    workspace = Path(args.workspace) if args.workspace else settings.workspace
-    workspace.mkdir(parents=True, exist_ok=True)
-
+    workspace: Path | None = None
     if args.executor == "coworkify":
         executor = CoworkifyExecutor.from_settings(settings)
     else:
+        # A fresh subdirectory per run by default (same layout as the GUI's),
+        # so verification only sees what this run wrote — the workspace root
+        # holds every earlier run's files too.
+        workspace = Path(args.workspace) if args.workspace else settings.workspace / str(uuid.uuid4())
+        workspace.mkdir(parents=True, exist_ok=True)
         worker_provider = get_provider(args.worker_model or settings.worker_model)
         executor = LocalExecutor(worker_provider, workspace=workspace, tools=build_tool_registry(workspace))
 
     result = await executor.run(plan)
 
-    if args.json:
-        print(_result_to_json(plan, result))
-    else:
-        _print_result(result)
+    verification = None
+    if domain is not None and result.status == "success":
+        verification = await verify_plan_result(domain, result.step_results, workspace)
 
-    return 0 if result.status == "success" else 1
+    if args.json:
+        print(_result_to_json(plan, result, verification, workspace))
+    else:
+        _print_result(result, verification, workspace)
+
+    if result.status != "success":
+        return 1
+    return 0 if verification is None or verification.passed else 1
 
 
 def _serve(args: argparse.Namespace) -> int:

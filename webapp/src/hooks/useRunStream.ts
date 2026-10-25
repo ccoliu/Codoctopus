@@ -67,6 +67,7 @@ export function useRunStream(runId: string | undefined): RunStreamState {
                   status: msg.data.status,
                   step_results: msg.data.step_results,
                   error: msg.data.error,
+                  verification: msg.data.verification,
                 }
               : prev,
           )

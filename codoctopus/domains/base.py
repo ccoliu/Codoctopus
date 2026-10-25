@@ -28,15 +28,48 @@ from __future__ import annotations
 
 from abc import ABC
 from dataclasses import dataclass
-from typing import ClassVar
+from pathlib import Path
+from typing import Any, ClassVar
 
 from codoctopus.tools.base import ToolContext
 
 
 @dataclass
 class VerifyResult:
+    #: False only when the check ran and failed — a skipped check counts as
+    #: passed, so it never fails a run on its own.
     passed: bool
     detail: str = ""
+    #: The check couldn't run at all (no tests to run, files on a remote
+    #: worker, ...) — distinct from running and passing.
+    skipped: bool = False
+
+    @property
+    def status(self) -> str:
+        if self.skipped:
+            return "skipped"
+        return "passed" if self.passed else "failed"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"status": self.status, "detail": self.detail}
+
+
+async def verify_plan_result(domain: Domain, step_results: dict[str, str], workspace: Path | None) -> VerifyResult:
+    """
+    Run `domain`'s check after a successful execution. `workspace` is None
+    when the files aren't on this machine (a Coworkify run executes on a
+    remote worker), in which case there's nothing local to check.
+    """
+    if workspace is None:
+        return VerifyResult(
+            passed=True,
+            skipped=True,
+            detail="Skipped: this run's files live on the Coworkify worker, not on this machine.",
+        )
+    try:
+        return await domain.verify(step_results, ToolContext(workspace=workspace))
+    except Exception as exc:
+        return VerifyResult(passed=False, detail=f"Verification itself raised an error: {exc}")
 
 
 class Domain(ABC):
@@ -62,4 +95,4 @@ class Domain(ABC):
 
     async def verify(self, step_results: dict[str, str], ctx: ToolContext) -> VerifyResult:
         """Check whether a completed plan's step outputs actually satisfy this domain."""
-        return VerifyResult(passed=True, detail="no verification defined for this domain")
+        return VerifyResult(passed=True, skipped=True, detail="No verification defined for this domain.")

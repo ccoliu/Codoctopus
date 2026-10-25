@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from codoctopus.config import get_settings, reset_settings
+from codoctopus.domains import Domain, VerifyResult, register_domain
 from codoctopus.llm import Completion, Provider, StopReason, register_provider
 from codoctopus.planning import Plan
 from codoctopus.server import create_app
@@ -416,6 +417,49 @@ def test_a_run_cut_off_by_a_restart_is_marked_failed_on_load():
     events = [(e["event"], e["data"].get("key")) for e in restarted.history("r1")]
     # The step that was mid-flight gets closed out rather than spinning forever.
     assert events == [("step_started", "write"), ("step_failed", "write"), ("run_done", None)]
+
+
+class _FailingCheckDomain(Domain):
+    name = "failing-check"
+
+    def __init__(self) -> None:
+        self.verified_in = None
+
+    async def verify(self, step_results, ctx):
+        self.verified_in = ctx.workspace
+        return VerifyResult(passed=False, detail="2 tests failed")
+
+
+def test_a_failing_domain_check_is_reported_without_failing_the_run(client: TestClient):
+    domain = _FailingCheckDomain()
+    register_domain("failing-check", lambda: domain)
+
+    created = client.post(
+        "/api/runs",
+        json={"goal": "ship it", "domain": "failing-check", "model": "scripted:x", "worker_model": "scripted:x"},
+    ).json()
+    events = _collect_stream(client, created["id"])
+
+    # verify() ran against this run's own workspace, not the shared root.
+    assert domain.verified_in.name == created["id"]
+    run_done = events[-1]["data"]
+    # Every step ran fine — that's what status says; the check is separate.
+    assert run_done["status"] == "success"
+    assert run_done["verification"] == {"status": "failed", "detail": "2 tests failed"}
+
+    # And it's part of the persisted run, so it survives a restart.
+    with TestClient(create_app()) as restarted:
+        detail = restarted.get(f"/api/runs/{created['id']}").json()
+    assert detail["verification"] == {"status": "failed", "detail": "2 tests failed"}
+
+
+def test_a_run_without_a_domain_has_no_verification(client: TestClient):
+    created = client.post(
+        "/api/runs", json={"goal": "ship it", "model": "scripted:x", "worker_model": "scripted:x"}
+    ).json()
+    events = _collect_stream(client, created["id"])
+
+    assert events[-1]["data"]["verification"] is None
 
 
 def test_a_planning_failure_reports_run_done_failed(client: TestClient):

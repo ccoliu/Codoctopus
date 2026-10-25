@@ -31,6 +31,13 @@ export interface RunDetail extends RunSummary {
   error: string | null
   /** Where a local run's tools actually read/wrote; null for a coworkify run (that filesystem is on the worker, not here). */
   workspace: string | null
+  /** The domain's own check, run after every step succeeded; null without a domain or if a step failed. */
+  verification: Verification | null
+}
+
+export interface Verification {
+  status: 'passed' | 'failed' | 'skipped'
+  detail: string
 }
 
 export interface RunCreateBody {
@@ -84,5 +91,10 @@ export type StreamEvent =
   | { event: 'step_failed'; data: { key: string; error: string } }
   | {
       event: 'run_done'
-      data: { status: RunStatus; step_results: Record<string, string>; error: string | null }
+      data: {
+        status: RunStatus
+        step_results: Record<string, string>
+        error: string | null
+        verification: Verification | null
+      }
     }

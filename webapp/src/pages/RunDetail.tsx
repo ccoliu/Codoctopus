@@ -6,7 +6,7 @@ import { Spinner } from '../components/Spinner'
 import { StatusBadge } from '../components/StatusBadge'
 import { useRunStream } from '../hooks/useRunStream'
 import { api } from '../lib/apiClient'
-import type { PlanStep, StepRunState } from '../lib/types'
+import type { PlanStep, StepRunState, Verification } from '../lib/types'
 
 const inputClass =
   'w-full rounded-lg border border-border bg-plane px-3 py-2 text-sm text-ink outline-none focus:border-accent'
@@ -177,6 +177,39 @@ function StepCard({ step, steps }: { step: PlanStep; steps: Record<string, StepR
   )
 }
 
+const VERIFICATION_STYLES: Record<Verification['status'], { label: string; card: string; text: string }> = {
+  passed: { label: 'Verification passed', card: 'border-status-good/30 bg-status-good/5', text: 'text-status-good' },
+  failed: {
+    label: 'Verification failed',
+    card: 'border-status-critical/30 bg-status-critical/5',
+    text: 'text-status-critical',
+  },
+  skipped: { label: 'Verification skipped', card: '', text: 'text-ink-secondary' },
+}
+
+function VerificationCard({ verification }: { verification: Verification }) {
+  const style = VERIFICATION_STYLES[verification.status]
+  // The first line is the summary (e.g. "FAILED (exit code 1)"); the rest is
+  // pytest's full output, which can run to thousands of lines.
+  const [summary, ...rest] = verification.detail.split('\n')
+  const body = rest.join('\n').trim()
+
+  return (
+    <Card className={`mb-6 p-4 ${style.card}`}>
+      <p className={`text-sm font-medium ${style.text}`}>{style.label}</p>
+      {summary && <p className="mt-1 text-sm text-ink-secondary">{summary}</p>}
+      {body && (
+        <details className="mt-2">
+          <summary className="cursor-pointer text-xs text-ink-muted hover:text-ink">Show output</summary>
+          <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap rounded-lg bg-plane p-3 text-xs text-ink-secondary">
+            {body}
+          </pre>
+        </details>
+      )}
+    </Card>
+  )
+}
+
 export function RunDetail() {
   const { id } = useParams<{ id: string }>()
   const { run, steps, connected } = useRunStream(id)
@@ -214,6 +247,8 @@ export function RunDetail() {
           <p className="text-sm text-status-critical">{run.error}</p>
         </Card>
       )}
+
+      {run.verification && <VerificationCard verification={run.verification} />}
 
       {!run.plan ? (
         <div className="flex items-center gap-2 text-sm text-ink-secondary">

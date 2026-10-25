@@ -25,6 +25,11 @@ class CodingDomain(Domain):
 
         result = await run_tests_tool.run(RunTestsArgs(), ctx)
 
+        # pytest exit code 5 = no tests collected. Nothing to check isn't the
+        # same as a failing check (e.g. a plain "write hello.py" goal).
+        if result.startswith("FAILED (exit code 5)"):
+            return VerifyResult(passed=True, skipped=True, detail="Skipped: no tests found in the workspace.")
+
         passed = result.startswith("PASSED")
 
         #if failed, can attach the test result to the verifier's feedback

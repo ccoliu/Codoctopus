@@ -21,7 +21,7 @@ from typing import Any, Literal
 import httpx
 
 from codoctopus.config import Settings
-from codoctopus.domains import get_domain
+from codoctopus.domains import get_domain, verify_plan_result
 from codoctopus.llm import get_provider
 from codoctopus.planning import Plan, make_plan
 from codoctopus.runtime import CoworkifyExecutor, LocalExecutor
@@ -74,6 +74,11 @@ class Run:
     #: otherwise stays undiscoverable — this is what lets the GUI show it
     #: instead of someone hunting through .codoctopus/workspace/ by hand.
     workspace: str | None = None
+    #: The domain's own check ({"status": "passed"|"failed"|"skipped", "detail": ...}),
+    #: run after the steps all succeed. None when there's no domain, or the
+    #: steps didn't all succeed. Separate from `status` on purpose: a step
+    #: erroring and "every step ran but the tests fail" are different failures.
+    verification: dict[str, str] | None = None
 
     def to_summary(self) -> dict[str, Any]:
         return {
@@ -92,6 +97,7 @@ class Run:
             "step_results": self.step_results,
             "error": self.error,
             "workspace": self.workspace,
+            "verification": self.verification,
         }
 
     @classmethod
@@ -138,7 +144,11 @@ class RunManager:
         run.status = "failed"
         run.error = _INTERRUPTED
         self._record(
-            run, {"event": "run_done", "data": {"status": "failed", "step_results": run.step_results, "error": _INTERRUPTED}}
+            run,
+            {
+                "event": "run_done",
+                "data": {"status": "failed", "step_results": run.step_results, "error": _INTERRUPTED, "verification": None},
+            },
         )
 
     def _record(self, run: Run, entry: dict[str, Any]) -> None:
@@ -253,6 +263,7 @@ class RunManager:
             run.plan = plan
             run.status = "running"
 
+            ws_path: Path | None = None
             if run.executor == "coworkify":
                 # CoworkifyExecutor has no on_event hook (Coworkify's own DAG
                 # scheduling runs the steps) — the GUI gets plan_ready above
@@ -283,17 +294,28 @@ class RunManager:
                 executor = LocalExecutor(worker_provider, workspace=ws_path, tools=tools, on_event=on_event)
                 result = await executor.run(plan)
 
+            if domain_obj is not None and result.status == "success":
+                verdict = await verify_plan_result(domain_obj, result.step_results, ws_path)
+                run.verification = verdict.to_dict()
+
             run.status = result.status
             run.step_results = result.step_results
             run.error = result.error
             await self._broadcast(
                 run_id,
                 "run_done",
-                {"status": result.status, "step_results": result.step_results, "error": result.error},
+                {
+                    "status": result.status,
+                    "step_results": result.step_results,
+                    "error": result.error,
+                    "verification": run.verification,
+                },
             )
         except Exception as exc:
             run.status = "failed"
             run.error = str(exc)
             await self._broadcast(
-                run_id, "run_done", {"status": "failed", "step_results": run.step_results, "error": str(exc)}
+                run_id,
+                "run_done",
+                {"status": "failed", "step_results": run.step_results, "error": str(exc), "verification": None},
             )

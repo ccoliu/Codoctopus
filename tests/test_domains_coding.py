@@ -87,6 +87,15 @@ async def test_verify_attaches_the_last_step_output_on_failure(workspace, ctx):
     assert "here is the code I wrote" in result.detail
 
 
+async def test_verify_is_skipped_not_failed_when_there_are_no_tests(workspace, ctx):
+    (workspace / "hello.py").write_text('print("hi")\n')
+
+    result = await CodingDomain().verify(step_results={"write": "wrote hello.py"}, ctx=ctx)
+
+    assert result.status == "skipped"
+    assert result.passed is True
+
+
 async def test_verify_does_not_crash_with_no_step_results(workspace, ctx):
     (workspace / "test_ok.py").write_text("def test_it():\n    assert True\n")
 
