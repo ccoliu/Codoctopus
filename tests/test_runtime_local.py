@@ -9,6 +9,7 @@ import pytest
 from codoctopus.llm import Completion, Provider
 from codoctopus.planning.models import Plan, PlanStep
 from codoctopus.runtime import LocalExecutor
+from codoctopus.runtime.local import _parse_list_output
 
 
 class ScriptedProvider(Provider):
@@ -115,6 +116,60 @@ async def test_for_each_dynamic_expansion(workspace: Path):
     assert result.step_results["producer"] == '["apple", "banana"]'
     assert result.step_results["consumer[0]"] == "apple processed"
     assert result.step_results["consumer[1]"] == "banana processed"
+
+
+# --- for_each source parsing (issue #10) -------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # Clean JSON and plain lines keep working as before.
+        ('["a.py", "b.py"]', ["a.py", "b.py"]),
+        ("a.py\nb.py", ["a.py", "b.py"]),
+        ("", []),
+        # Wrapped JSON — these used to split line by line into garbage items.
+        ('```json\n["a.py", "b.py"]\n```', ["a.py", "b.py"]),
+        ('```\n["a.py", "b.py"]\n```', ["a.py", "b.py"]),
+        ('以下是清單：\n["a.py", "b.py"]', ["a.py", "b.py"]),
+        ('Here they are:\n[\n  "a.py",\n  "b.py"\n]\nLet me know if you need more.', ["a.py", "b.py"]),
+        ('```json\n[{"path": "a.py"}, {"path": "b.py"}]\n```', [{"path": "a.py"}, {"path": "b.py"}]),
+        # A fenced plain list loses its fence markers rather than keeping them as items.
+        ("```\na.py\nb.py\n```", ["a.py", "b.py"]),
+        # Plain lines that merely contain brackets must not be misread as a JSON array.
+        ("a.py\nb[1].py", ["a.py", "b[1].py"]),
+        ("test_x[0]\ntest_y[1]", ["test_x[0]", "test_y[1]"]),
+        # A JSON value that isn't a list falls back to lines.
+        ('{"files": ["a.py"]}', ['{"files": ["a.py"]}']),
+    ],
+)
+def test_parse_list_output(raw, expected):
+    assert _parse_list_output(raw) == expected
+
+
+@pytest.mark.anyio
+async def test_for_each_expands_a_code_fenced_list_into_real_items(workspace: Path):
+    provider = ScriptedProvider(
+        responses={
+            "list items": 'Sure:\n```json\n[{"path": "a.py"}, {"path": "b.py"}]\n```',
+            "process: a.py": "a done",
+            "process: b.py": "b done",
+        }
+    )
+    plan = Plan(
+        goal="fenced for_each",
+        steps=[
+            PlanStep(key="producer", name="P", role="rp", instruction="list items"),
+            PlanStep(key="consumer", name="C", role="rc", instruction="process: {{item.path}}", for_each="producer"),
+        ],
+    )
+
+    result = await LocalExecutor(provider, workspace=workspace).run(plan)
+
+    assert result.status == "success"
+    assert result.step_results["consumer[0]"] == "a done"
+    assert result.step_results["consumer[1]"] == "b done"
+    assert "consumer[2]" not in result.step_results
 
 
 @pytest.mark.anyio

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -33,19 +34,49 @@ class _SkippedError(RuntimeError):
     """A step's dependency failed, so it never ran — distinct from the step's own work failing."""
 
 
+_FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
+
+
+def _json_list(text: str) -> list[Any] | None:
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    return data if isinstance(data, list) else None
+
+
 def _parse_list_output(raw: str) -> list[Any]:
-    """Parse output into a list for for_each expansion."""
+    """
+    Turn a for_each source step's free-form output into its list of items.
+
+    Models routinely wrap a JSON list in a code fence or put a sentence before
+    it, so those are unwrapped first. The JSON array has to start at the
+    beginning of a line, though: a plain one-item-per-line list whose items
+    happen to contain brackets (`test_x[1]`, `arr[0].py`) must still split by
+    line, not be misread as the bracketed fragment.
+    """
     raw = raw.strip()
     if not raw:
         return []
-    try:
-        data = json.loads(raw)
-        if isinstance(data, list):
+
+    fenced = _FENCE.search(raw)
+    if fenced:
+        raw = fenced.group(1).strip()
+
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+
+    if (data := _json_list(raw)) is not None:
+        return data
+
+    # A lead-in or trailing sentence around a JSON array: take the span from
+    # the first line opening a "[" to the last line closing a "]".
+    starts = [i for i, line in enumerate(lines) if line.startswith("[")]
+    ends = [i for i, line in enumerate(lines) if line.endswith("]")]
+    if starts and ends and ends[-1] >= starts[0]:
+        if (data := _json_list("\n".join(lines[starts[0] : ends[-1] + 1]))) is not None:
             return data
-    except Exception:
-        pass
-    # Fallback to lines
-    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+    return lines
 
 
 def _render_instruction(
