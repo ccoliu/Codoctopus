@@ -2,8 +2,7 @@
 # Codoctopus — HTTP tool
 #
 # SSRF guard in two layers:
-# - `_validate_public_url` checks a URL up front (clean early error). It's
-#   shared: codoctopus.tools.shell imports it to vet curl arguments.
+# - `_validate_public_url` checks a URL up front (clean early error).
 # - `_PublicOnlyBackend` is what actually enforces it for http_request: it
 #   resolves the hostname, checks every address, and connects to the address
 #   it just checked. Checking first and letting httpx connect afterwards would

@@ -6,10 +6,11 @@ from pydantic import BaseModel, Field
 
 from codoctopus.tools.base import Tool, ToolContext
 from codoctopus.tools.filesystem import resolve_in_workspace
-from codoctopus.tools.http import _validate_public_url
 
 # 允許的指令白名單（允許 List）
-ALLOWED_COMMANDS = ["ls", "dir", "cat", "echo", "git", "curl"]
+# 不含 curl：它的參數太多（不帶 scheme 的 host、-L、-x、--resolve…），
+# 無法靠逐一檢查參數擋住 SSRF。要連網請用 http_request tool。
+ALLOWED_COMMANDS = ["ls", "dir", "cat", "echo", "git"]
 ALLOWED_SUBCOMMANDS = {
     "git": ["diff", "log", "status"]
 }
@@ -55,11 +56,6 @@ class ShellTool(Tool):
         # 3) 安全檢查：防止目錄穿越 / 任意路徑寫入 (Path Traversal)
         workspace = ctx.workspace
         for arg in args_list:
-            if "://" in arg: #Allow URL
-                try:
-                    _validate_public_url(arg)
-                except ValueError:
-                    raise ValueError(f"Invalid URL: {arg}")
             try:
                 resolve_in_workspace(workspace, arg)
             except ValueError:
