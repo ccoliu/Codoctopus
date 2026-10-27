@@ -8,6 +8,8 @@ export interface PlanStep {
   depends_on: string[]
   tools: string[]
   for_each: string | null
+  // Absent on runs persisted before reduce_of existed.
+  reduce_of?: string | null
 }
 
 export interface Plan {

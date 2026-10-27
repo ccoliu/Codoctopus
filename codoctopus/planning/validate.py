@@ -10,7 +10,12 @@
 
 from __future__ import annotations
 
+import re
+
 from codoctopus.planning.models import Plan, PlanStep
+
+# Same pattern Coworkify uses to find step references in a payload.
+_STEP_REF = re.compile(r"\{\{\s*steps\.([a-zA-Z0-9_]+)\.result(?:\.[a-zA-Z0-9_]+)*\s*\}\}")
 
 
 class PlanValidationError(ValueError):
@@ -43,15 +48,22 @@ def _validate_dependencies_exist(steps: list[PlanStep], key_set: set[str]) -> No
 
 def _validate_for_each_rules(steps: list[PlanStep], key_set: set[str], by_key: dict[str, PlanStep]) -> None:
     for step in steps:
+        if step.for_each is not None and step.reduce_of is not None:
+            raise PlanValidationError(f"step '{step.key}' cannot set both for_each and reduce_of")
+
+        if step.reduce_of is not None:
+            _validate_reduce_step(step, key_set, by_key)
+            continue
+
         if step.for_each is None:
-            # A regular step may not fan in from a for_each step — the value
-            # produced is a list of per-item results, not a single result, and
-            # nothing here defines how to reduce it (no fan-in/reduce yet).
+            # A regular step may not depend on a for_each step directly — the
+            # value produced is a list of per-item results, not a single
+            # result. Collecting them is what reduce_of is for.
             for dep in step.depends_on:
                 if by_key[dep].for_each is not None:
                     raise PlanValidationError(
-                        f"step '{step.key}' depends on '{dep}', a for_each step "
-                        "(fan-in/reduce is not supported)"
+                        f"step '{step.key}' depends on '{dep}', a for_each step; to fan in its "
+                        f"results, use reduce_of='{dep}' instead"
                     )
             continue
 
@@ -74,8 +86,36 @@ def _validate_for_each_rules(steps: list[PlanStep], key_set: set[str], by_key: d
                 )
 
 
+def _validate_reduce_step(step: PlanStep, key_set: set[str], by_key: dict[str, PlanStep]) -> None:
+    if step.reduce_of not in key_set:
+        raise PlanValidationError(f"step '{step.key}' has reduce_of pointing to unknown step '{step.reduce_of}'")
+    if step.reduce_of == step.key:
+        raise PlanValidationError(f"step '{step.key}' cannot reduce itself")
+    if by_key[step.reduce_of].for_each is None:
+        raise PlanValidationError(
+            f"step '{step.key}' has reduce_of on '{step.reduce_of}', which is not a for_each step; "
+            "reduce_of can only point to a step with for_each set"
+        )
+    # Coworkify fills a reduce step's dependencies itself once the group has
+    # expanded, and renders only {{items}} into it — never step references.
+    if step.depends_on:
+        raise PlanValidationError(
+            f"step '{step.key}' is a reduce step; its dependencies are implied by reduce_of and "
+            "depends_on must be left empty"
+        )
+    if _STEP_REF.search(step.role) or _STEP_REF.search(step.instruction):
+        raise PlanValidationError(
+            f"step '{step.key}' is a reduce step; use {{{{items}}}} to get the upstream results, "
+            "not {{steps.<key>.result}}"
+        )
+
+
 def _validate_no_cycles(steps: list[PlanStep], key_set: set[str]) -> None:
-    deps = {s.key: s.depends_on for s in steps}
+    # for_each and reduce_of each imply a wait on the step they name, so they
+    # count as edges too — a cycle through one would deadlock every executor.
+    deps = {
+        s.key: [*s.depends_on, *(k for k in (s.for_each, s.reduce_of) if k is not None)] for s in steps
+    }
     WHITE, GRAY, BLACK = 0, 1, 2
     color = {k: WHITE for k in key_set}
 

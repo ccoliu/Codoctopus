@@ -188,6 +188,27 @@ async def test_depends_on_and_for_each_pass_through_unchanged(patch_client):
 
     by_key = {s["key"]: s for s in fake.created_body["steps"]}
     assert by_key["apply"]["for_each"] == "search"
+    assert by_key["apply"]["reduce_of"] is None
+
+
+async def test_reduce_of_passes_through(patch_client):
+    fake = FakeCoworkify(pending_polls=0)
+    fake.add_task_result("search", status="success", output="[]")
+    fake.add_task_result("apply", status="success", output="")
+    fake.add_task_result("summarize", status="success", output="nothing")
+    patch_client(fake)
+
+    executor = CoworkifyExecutor("http://coworkify.test", token="test-token")
+    plan = Plan(
+        goal="apply to jobs",
+        steps=[step("search"), step("apply", for_each="search"), step("summarize", reduce_of="apply")],
+    )
+
+    await executor.run(plan)
+
+    by_key = {s["key"]: s for s in fake.created_body["steps"]}
+    assert by_key["summarize"]["reduce_of"] == "apply"
+    assert by_key["summarize"]["depends_on"] == []
 
 
 # --- polling ---------------------------------------------------------------

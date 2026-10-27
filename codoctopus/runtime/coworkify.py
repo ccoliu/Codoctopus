@@ -163,6 +163,7 @@ class CoworkifyExecutor(Executor):
                 },
                 "depends_on": step.depends_on,
                 "for_each": step.for_each,
+                "reduce_of": step.reduce_of,
             }
             for step in plan.steps
         ]

@@ -433,3 +433,103 @@ async def test_plans_with_cyclic_dependency(workspace: Path):
     assert "s2" not in result.step_results
     
 
+
+
+# --- for_each source wait / reduce_of (issue #12) ----------------------------
+
+
+class SlowScriptedProvider(ScriptedProvider):
+    """Yields to the event loop on every call, the way a real network provider does."""
+
+    async def _complete(self, messages, **kwargs) -> Completion:
+        await asyncio.sleep(0.01)
+        return await super()._complete(messages, **kwargs)
+
+
+@pytest.mark.anyio
+async def test_a_for_each_step_waits_for_its_source_before_expanding(workspace: Path):
+    # The consumer has no depends_on (the validator forbids naming its own
+    # source there), so it used to read the source's result before the source
+    # had finished, see an empty list, and succeed having done nothing.
+    provider = SlowScriptedProvider(responses={"list items": '["a", "b"]'})
+    plan = Plan(
+        goal="slow source",
+        steps=[
+            PlanStep(key="producer", name="P", role="rp", instruction="list items"),
+            PlanStep(key="consumer", name="C", role="rc", instruction="process {{item}}", for_each="producer"),
+        ],
+    )
+
+    result = await LocalExecutor(provider, workspace=workspace).run(plan)
+
+    assert result.status == "success"
+    assert result.step_results["consumer[0]"] == "response for: process a"
+    assert result.step_results["consumer[1]"] == "response for: process b"
+
+
+def _reduce_plan(instruction: str = "summarise {{items}}") -> Plan:
+    return Plan(
+        goal="expand then summarise",
+        steps=[
+            PlanStep(key="producer", name="P", role="rp", instruction="list items"),
+            PlanStep(key="consumer", name="C", role="rc", instruction="process {{item}}", for_each="producer"),
+            PlanStep(key="summary", name="S", role="rs", instruction=instruction, reduce_of="consumer"),
+            PlanStep(
+                key="report", name="R", role="rr", instruction="report on {{steps.summary.result}}",
+                depends_on=["summary"],
+            ),
+        ],
+    )
+
+
+@pytest.mark.anyio
+async def test_a_reduce_step_gets_every_item_result_in_index_order(workspace: Path):
+    provider = SlowScriptedProvider(
+        responses={
+            "list items": '["a", "b", "c"]',
+            "process a": "A",
+            "process b": "B",
+            "process c": "C",
+            'summarise ["A", "B", "C"]': "all three",
+        }
+    )
+
+    result = await LocalExecutor(provider, workspace=workspace).run(_reduce_plan())
+
+    assert result.status == "success"
+    assert result.step_results["summary"] == "all three"
+    # And a plain step downstream of the reduce step sees its single result.
+    assert result.step_results["report"] == "response for: report on all three"
+
+
+@pytest.mark.anyio
+async def test_a_reduce_step_still_runs_when_the_group_expanded_to_nothing(workspace: Path):
+    provider = SlowScriptedProvider(responses={"list items": "[]", "summarise []": "nothing to do"})
+
+    result = await LocalExecutor(provider, workspace=workspace).run(_reduce_plan())
+
+    assert result.status == "success"
+    assert result.step_results["summary"] == "nothing to do"
+
+
+@pytest.mark.anyio
+async def test_a_failing_item_skips_the_reduce_step(workspace: Path):
+    class FailingItemProvider(SlowScriptedProvider):
+        async def _complete(self, messages, **kwargs) -> Completion:
+            if messages[-1].content == "process b":
+                raise RuntimeError("item b broke")
+            return await super()._complete(messages, **kwargs)
+
+    provider = FailingItemProvider(responses={"list items": '["a", "b"]'})
+    events: list[tuple[str, dict]] = []
+
+    result = await LocalExecutor(
+        provider, workspace=workspace, on_event=lambda e, d: events.append((e, d))
+    ).run(_reduce_plan())
+
+    assert result.status == "failed"
+    assert "item b broke" in (result.error or "")
+    assert "summary" not in result.step_results
+    summary_failed = next(d for e, d in events if e == "step_failed" and d["key"] == "summary")
+    assert "skipped" in summary_failed["error"]
+    assert not any(c["task"].startswith("summarise") for c in provider.calls)

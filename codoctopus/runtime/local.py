@@ -3,7 +3,7 @@
 #
 # Runs a Plan directly in the current process using asyncio.
 # Handles DAG scheduling, step dependency resolution, instruction templating,
-# and for_each expansion with zero external infrastructure.
+# for_each expansion, and reduce_of fan-in with zero external infrastructure.
 # ---------------------------------------------------
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ class _SkippedError(RuntimeError):
 
 
 _FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
+_ITEMS_PLACEHOLDER = re.compile(r"\{\{\s*items\s*\}\}")
 
 
 def _json_list(text: str) -> list[Any] | None:
@@ -84,8 +85,9 @@ def _render_instruction(
     step_results: dict[str, str],
     *,
     item: Any | None = None,
+    items: list[str] | None = None,
 ) -> str:
-    """Render {{steps.<key>.result}} and {{item}} / {{item.<field>}} in instruction."""
+    """Render {{steps.<key>.result}}, {{item}} / {{item.<field>}} and {{items}} in instruction."""
     rendered = instruction
 
     for key, result in step_results.items():
@@ -97,6 +99,12 @@ def _render_instruction(
             for k, v in item.items():
                 rendered = rendered.replace(f"{{{{item.{k}}}}}", str(v))
 
+    if items is not None:
+        # JSON, not str(), so the agent sees a real list — same as Coworkify's
+        # render_reduce_payloads.
+        items_json = json.dumps(items, ensure_ascii=False)
+        rendered = _ITEMS_PLACEHOLDER.sub(lambda _: items_json, rendered)
+
     return rendered
 
 
@@ -107,6 +115,7 @@ class LocalExecutor(Executor):
     - Resolves dependencies and executes ready steps concurrently.
     - Renders `{{steps.<key>.result}}` and `{{item}}` placeholders before running a step.
     - Dynamically expands `for_each` steps and records results as `<key>[<index>]`.
+    - Runs a `reduce_of` step once its whole for_each group is done, with `{{items}}`.
     """
 
     def __init__(
@@ -164,6 +173,9 @@ class LocalExecutor(Executor):
             return PlanResult(plan=plan, status="failed", error=str(exc))
 
         step_results: dict[str, str] = {}
+        # for_each step key -> how many items it expanded into, so a reduce
+        # step knows which "<key>[<i>]" results make up the group.
+        expanded_counts: dict[str, int] = {}
         loop = asyncio.get_running_loop()
 
         def _create_step_future() -> asyncio.Future[None]:
@@ -176,11 +188,14 @@ class LocalExecutor(Executor):
         }
 
         async def execute_step(s: PlanStep) -> None:
-            # 1) Wait for all upstream dependencies. A dependency that failed
-            # raises here too (awaiting a future with an exception set) — wrap
-            # it so the resulting step_failed event reads as "skipped because
-            # X failed", not as if this step's own work threw that error.
-            for dep in s.depends_on:
+            # 1) Wait for all upstream dependencies, including the implied
+            # ones: a for_each step needs its source's list, and a reduce step
+            # needs its whole group. A dependency that failed raises here too
+            # (awaiting a future with an exception set) — wrap it so the
+            # resulting step_failed event reads as "skipped because X failed",
+            # not as if this step's own work threw that error.
+            implied = [k for k in (s.for_each, s.reduce_of) if k is not None]
+            for dep in [*s.depends_on, *implied]:
                 try:
                     await step_futures[dep]
                 except Exception as exc:
@@ -190,6 +205,7 @@ class LocalExecutor(Executor):
             if s.for_each is not None:
                 source_raw = step_results.get(s.for_each, "")
                 items = _parse_list_output(source_raw)
+                expanded_counts[s.key] = len(items)
 
                 async def run_item(idx: int, item: Any) -> None:
                     item_key = f"{s.key}[{idx}]"
@@ -216,9 +232,14 @@ class LocalExecutor(Executor):
                 if item_errors:
                     raise item_errors[0]
             else:
-                # 3) Regular single step execution
+                # 3) Regular single step execution — a reduce step is one too,
+                # just with its group's results passed in index order.
                 await self._emit("step_started", {"key": s.key})
-                rendered = _render_instruction(s.instruction, step_results)
+                group = None
+                if s.reduce_of is not None:
+                    count = expanded_counts.get(s.reduce_of, 0)
+                    group = [step_results[f"{s.reduce_of}[{i}]"] for i in range(count)]
+                rendered = _render_instruction(s.instruction, step_results, items=group)
                 tools = self._get_tools_for_step(s.tools)
                 agent = Agent(self.provider, system=s.role, tools=tools)
                 res = await agent.run(rendered)

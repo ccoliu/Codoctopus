@@ -137,6 +137,11 @@ function StepCard({ step, steps }: { step: PlanStep; steps: Record<string, StepR
                 for_each: {step.for_each}
               </span>
             )}
+            {step.reduce_of && (
+              <span className="rounded-full bg-plane px-2 py-0.5 text-xs text-ink-muted">
+                reduce_of: {step.reduce_of}
+              </span>
+            )}
           </div>
           <p className="mt-1 text-sm text-ink-secondary">{step.instruction}</p>
           {step.depends_on.length > 0 && (

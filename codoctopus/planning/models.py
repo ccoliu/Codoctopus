@@ -22,10 +22,12 @@ class PlanStep(BaseModel):
 
     `instruction` may reference another step's completed output with
     "{{steps.<key>.result}}", and — for a step whose `for_each` is set — the
-    current item with "{{item}}" / "{{item.<field>}}". Both placeholder forms
-    match Coworkify's own templating so the two systems stay easy to hold in
-    your head together; rendering them is the executor's job, not the
-    planner's.
+    current item with "{{item}}" / "{{item.<field>}}". A step whose
+    `reduce_of` is set instead receives every expanded result of that
+    for_each step, in item order, as a JSON list via "{{items}}". All these
+    placeholder forms match Coworkify's own templating so the two systems
+    stay easy to hold in your head together; rendering them is the
+    executor's job, not the planner's.
     """
 
     key: str = Field(description="Identifier for this step, unique within the plan")
@@ -39,6 +41,14 @@ class PlanStep(BaseModel):
         description=(
             "Key of a step whose result is a list. When set, this step runs once per "
             "item in that list instead of once."
+        ),
+    )
+    reduce_of: str | None = Field(
+        default=None,
+        description=(
+            "Key of a for_each step. When set, this step runs once after every expanded "
+            "copy of that step has finished, receiving all their results as {{items}}. "
+            "Leave depends_on empty; the wait is implied."
         ),
     )
 

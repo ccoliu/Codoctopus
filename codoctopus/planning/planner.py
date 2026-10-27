@@ -39,6 +39,12 @@ once per item in it; reference the current item in a dependent step's \
 instruction with "{{item}}" or "{{item.<field>}}". Reference another \
 already-completed step's output with "{{steps.<key>.result}}".
 
+No step may list a for_each step in "depends_on". To combine every result \
+of a for_each step (e.g. summarise them all), add a step with "reduce_of" \
+set to that for_each step's key and leave its "depends_on" empty; it runs \
+once, after every item is done, and gets all their results as a JSON list \
+via "{{items}}" (it cannot use "{{steps.<key>.result}}").
+
 Keep the plan as small as it can be while still fully accomplishing the goal."""
 
 

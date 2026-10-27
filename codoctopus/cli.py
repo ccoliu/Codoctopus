@@ -37,6 +37,8 @@ def _print_plan(plan: Plan) -> None:
             extras.append(f"depends_on={step.depends_on}")
         if step.for_each:
             extras.append(f"for_each={step.for_each}")
+        if step.reduce_of:
+            extras.append(f"reduce_of={step.reduce_of}")
         suffix = f"  ({', '.join(extras)})" if extras else ""
         print(f"  [{step.key}] {step.name}{suffix}")
         print(f"      {step.instruction}")
