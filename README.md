@@ -1,8 +1,25 @@
 # Codoctopus 🐙
 
+[![CI](https://github.com/ccoliu/Codoctopus/actions/workflows/ci.yml/badge.svg)](https://github.com/ccoliu/Codoctopus/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg?style=flat&logo=Python&logoColor=white)](https://www.python.org/)
+
 A provider-neutral agent orchestration framework: give it a goal, and it decomposes the
 goal into a verified task DAG, then runs each step with agents that can actually act —
 read and write files, run shell commands and tests, and make HTTP requests.
+Verification means the code was really run, not re-read by an LLM.
+
+```mermaid
+flowchart LR
+    goal["Goal<br/>(one sentence)"]
+    planner["Planner<br/>goal → validated Plan (DAG)"]
+    exec["Executor<br/>LocalExecutor (asyncio)<br/>or Coworkify (Celery)"]
+    agent["Agents<br/>tool-use loop:<br/>fs · shell · tests · http"]
+    verify["Domain check<br/>coding: run pytest<br/>research: report written?"]
+    goal --> planner --> exec --> agent --> verify
+    llm["Anthropic · OpenAI · Gemini · Ollama<br/>one Provider interface"]
+    planner -.-> llm
+    agent -.-> llm
+```
 
 - **Provider-neutral** — Anthropic, OpenAI, Gemini, Ollama, or any OpenAI-compatible
   gateway (LM Studio, vLLM, ...). Switching models is a config change, not a code change.
@@ -11,9 +28,44 @@ read and write files, run shell commands and tests, and make HTTP requests.
 - **Pluggable domains** — `coding` and `research` ship built in.
 - **Zero infrastructure by default** — plans run in-process on asyncio; optionally hand
   them to [Coworkify](https://github.com/ccoliu/coworkify) for retries and persistence.
+- **Tested without API keys** — 208 tests across 19 modules drive every provider through
+  scripted fakes; CI runs ruff and the suite on Python 3.11 and 3.12.
 
 See [`docs/ARCHITECTURE_V2.md`](docs/ARCHITECTURE_V2.md) for the full design.
 
+## Try it in 60 seconds
+
+No API key needed if [Ollama](https://ollama.com) is running locally; otherwise set
+`ANTHROPIC_API_KEY` (or `OPENAI_API_KEY` / `GEMINI_API_KEY`) and drop the `--model` flags.
+
+```bash
+pip install -e ".[all]"
+codoctopus run "Write a CLI that converts CSV to JSON, with tests" \
+    --domain coding --model ollama:llama3.1 --worker-model ollama:llama3.1
+```
+
+The output is the plan, then each step's result, then the domain check (abridged):
+
+```text
+Plan for: Write a CLI that converts CSV to JSON, with tests
+Domain: coding
+  [write] Implement csv2json CLI
+      Create csv2json.py that reads a CSV path and prints JSON ...
+  [test] Write tests  (depends_on=['write'])
+      Add tests/test_csv2json.py covering headers, quoting, empty input ...
+
+Status: success
+
+--- write ---
+Created csv2json.py ...
+--- test ---
+Created tests/test_csv2json.py ...
+
+Verification: PASSED
+Workspace: .codoctopus/workspace/<run-id>
+```
+
+`Verification: FAILED` means the agents' own pytest run failed, and the exit code is 1.
 ## Install
 
 Requires Python 3.11+.
