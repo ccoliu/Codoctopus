@@ -251,8 +251,13 @@ def _coworkify_steps_graph():
     import sys
     from pathlib import Path
 
-    root = os.environ.get("COWORKIFY_PATH") or str(Path(__file__).resolve().parents[2] / "coworkify")
+    explicit = os.environ.get("COWORKIFY_PATH")
+    root = explicit or str(Path(__file__).resolve().parents[2] / "coworkify")
     if not (Path(root) / "app" / "schemas" / "workflow.py").is_file():
+        if explicit:
+            # Set on purpose (as CI does) but missing — fail loudly rather than
+            # skip, or a broken checkout step would silently turn the check off.
+            pytest.fail(f"COWORKIFY_PATH={explicit} is not a coworkify checkout")
         pytest.skip("no coworkify checkout found (set COWORKIFY_PATH)")
     sys.path.insert(0, root)
     try:
