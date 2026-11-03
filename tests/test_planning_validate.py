@@ -204,8 +204,6 @@ def test_a_cycle_through_for_each_and_reduce_of_is_rejected():
 # on either side that the other lacks shows up as a failing case here.
 #
 # Deliberately left out, because the two are known to differ:
-# - a cycle only visible through for_each/reduce_of edges: rejected here,
-#   accepted by Coworkify (which then never finishes the workflow).
 # - {{steps.<key>.result}} inside a for_each step: rejected by Coworkify,
 #   rendered normally by LocalExecutor.
 
@@ -219,6 +217,12 @@ PARITY_CASES = [
     ("unknown-dep", [step("a", depends_on=["nope"])], False),
     ("self-dep", [step("a", depends_on=["a"])], False),
     ("cycle", [step("a", depends_on=["b"]), step("b", depends_on=["a"])], False),
+    # Only a cycle once for_each / reduce_of count as waits: a -> r -> t -> a.
+    (
+        "cycle-through-for_each-and-reduce",
+        [step("a", depends_on=["r"]), step("t", for_each="a"), step("r", reduce_of="t")],
+        False,
+    ),
     ("for_each-unknown", [step("a", for_each="nope")], False),
     ("for_each-self", [step("a", for_each="a")], False),
     ("for_each-nested", [step("s"), step("t", for_each="s"), step("u", for_each="t")], False),
